@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "battery-worth"
+version = "0.1.0"
+description = "Would a home battery have paid off for YOU? Retrospective what-if analysis from your real energy data (Home Assistant friendly)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Marco" }]
+keywords = ["home-assistant", "solar", "battery", "energy", "roi", "photovoltaic"]
+dependencies = [
+    "pandas>=2.2",
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "jinja2>=3.1",
+    "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.34"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pandas-stubs",
+]
+
+[project.scripts]
+battery-worth = "battery_worth.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/battery_worth"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["matplotlib.*"]
+ignore_missing_imports = true
