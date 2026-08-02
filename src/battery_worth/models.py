@@ -13,12 +13,71 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ColumnMapping(BaseModel):
-    """Maps user CSV columns to the three required energy series (kWh per interval)."""
+    """Maps user CSV columns to the source energy series (kWh per interval).
+
+    Two mutually exclusive schemas are supported:
+    - grid-centric: grid_import + grid_export + pv_production (Home Assistant style)
+    - meter-centric: consumption + pv_production (gross metering, net = consumption - pv)
+    Exactly one complete schema must be present.
+    """
 
     timestamp: str = Field(description="Column with ISO timestamps (local time)")
-    grid_import: str = Field(description="Energy imported from grid, kWh per interval")
-    grid_export: str = Field(description="Energy exported to grid, kWh per interval")
     pv_production: str = Field(description="PV production, kWh per interval")
+    grid_import: str | None = Field(
+        default=None, description="Energy imported from grid, kWh per interval"
+    )
+    grid_export: str | None = Field(
+        default=None, description="Energy exported to grid, kWh per interval"
+    )
+    consumption: str | None = Field(
+        default=None, description="Total home consumption (gross), kWh per interval"
+    )
+
+    @model_validator(mode="after")
+    def _check_one_complete_schema(self) -> ColumnMapping:
+        any_grid = self.grid_import is not None or self.grid_export is not None
+        grid_centric = self.grid_import is not None and self.grid_export is not None
+        meter_centric = self.consumption is not None
+        if any_grid and meter_centric:
+            msg = (
+                "ColumnMapping is ambiguous: both grid columns (grid_import/grid_export) "
+                "and consumption are set. Provide either grid_import+grid_export "
+                "(grid-centric) or consumption (meter-centric), not a mix."
+            )
+            raise ValueError(msg)
+        if not grid_centric and not meter_centric:
+            msg = (
+                "ColumnMapping is incomplete: provide either grid_import+grid_export "
+                "(grid-centric schema) or consumption (meter-centric schema), "
+                "alongside pv_production."
+            )
+            raise ValueError(msg)
+        return self
+
+    @property
+    def schema_kind(self) -> str:
+        """Which of the two supported input schemas this mapping uses."""
+        return "grid_centric" if self.grid_import is not None else "meter_centric"
+
+
+class IngestReport(BaseModel):
+    """Data-quality metadata produced while loading and validating a user CSV."""
+
+    period_start: str
+    period_end: str
+    days_analyzed: int
+    native_resolution_minutes: int
+    schema_used: str = Field(description="'grid_centric' or 'meter_centric'")
+    cumulative_columns: list[str] = Field(
+        default_factory=list, description="Source columns detected as cumulative meter readings"
+    )
+    gaps_count: int = 0
+    gaps_total_hours: float = 0.0
+    negative_values_clipped: int = 0
+    seasonality_warning: bool = Field(
+        description="True when < 365 days of data: results may not capture seasonality"
+    )
+    warnings: list[str] = Field(default_factory=list)
 
 
 class BatterySpec(BaseModel):
