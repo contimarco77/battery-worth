@@ -365,3 +365,131 @@ def test_analyze_is_an_explicit_subcommand(meter_csv: Path) -> None:
     """The locked surface is `battery-worth analyze <file>`, not `battery-worth <file>`."""
     result = runner.invoke(app, [str(meter_csv), "--flat-price", "0.25"])
     assert result.exit_code != 0
+
+
+def test_output_writes_a_markdown_report(meter_csv: Path, tmp_path: Path) -> None:
+    """--output writes the file; the terminal output must be unchanged by it."""
+    target = tmp_path / "report.md"
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5,10",
+         "--battery-cost-per-kwh", "600", "--output", str(target)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert target.exists()
+    written = target.read_text(encoding="utf-8")
+    for section in ("## Verdict", "## Scenario comparison", "## Limits & assumptions"):
+        assert section in written
+    # Terminal output is untouched: still the plain-text report, plus a confirmation.
+    assert "SCENARIO COMPARISON" in result.output
+    assert f"Report written to {target}" in result.output
+
+
+def test_terminal_output_identical_with_and_without_output(
+    meter_csv: Path, tmp_path: Path
+) -> None:
+    """--output is purely additive: it must not reshape what lands on stdout."""
+    args = ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5"]
+    without = runner.invoke(app, args)
+    with_file = runner.invoke(app, [*args, "--output", str(tmp_path / "r.md")])
+
+    assert without.exit_code == 0
+    assert with_file.exit_code == 0
+    trailer = f"Report written to {tmp_path / 'r.md'}\n"
+    assert with_file.output.replace(trailer, "") == without.output
+
+
+def test_output_to_an_unwritable_path_is_a_user_error(meter_csv: Path, tmp_path: Path) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25",
+         "--output", str(blocker / "report.md")],
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "Could not write the report" in result.output
+
+
+def test_export_price_sweep_reaches_the_report(meter_csv: Path, tmp_path: Path) -> None:
+    target = tmp_path / "report.md"
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "5",
+         "--export-price-sweep", "0,0.2", "--output", str(target)],
+    )
+
+    assert result.exit_code == 0, result.output
+    written = target.read_text(encoding="utf-8")
+    assert "0 EUR/kWh" in written
+    assert "0.2 EUR/kWh" in written
+
+
+def test_export_price_sweep_rejects_non_numbers(meter_csv: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25",
+         "--export-price-sweep", "0.1,cheap"],
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "'cheap'" in result.output
+
+
+def test_export_price_sweep_rejects_negatives(meter_csv: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25",
+         "--export-price-sweep", "0.1,-0.2"],
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "zero or positive" in result.output
+
+
+def test_empty_export_price_sweep_is_a_user_error(meter_csv: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--export-price-sweep", " , "],
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "--export-price-sweep is empty" in result.output
+
+
+def test_terminal_and_report_print_the_same_annual_savings(
+    meter_csv: Path, tmp_path: Path
+) -> None:
+    """One run, two outputs: the annualized figures must agree exactly.
+
+    The terminal table and the Markdown report annualize the same scenarios by
+    the same rule. When each owned its own copy of the constant, a change to one
+    would have silently printed two different annual savings for a single run.
+    """
+    report_path = tmp_path / "report.md"
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--capacities", "5,10", "--flat-price", "0.25",
+         "--battery-cost-per-kwh", "600", "--output", str(report_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    markdown = report_path.read_text(encoding="utf-8")
+
+    # The terminal prints "  5 kWh   <savings>€ ..."; the report "| 5 kWh | <savings> EUR |".
+    for capacity in ("5", "10"):
+        terminal_row = next(
+            line for line in result.output.splitlines()
+            if line.strip().startswith(f"{capacity} kWh")
+        )
+        report_row = next(
+            line for line in markdown.splitlines() if line.startswith(f"| {capacity} kWh |")
+        )
+        terminal_savings = terminal_row.split("€")[0].split()[-1]
+        report_savings = report_row.split("|")[2].strip().removesuffix(" EUR")
+
+        assert terminal_savings == report_savings, (
+            f"{capacity} kWh: terminal says {terminal_savings}, report says {report_savings}"
+        )

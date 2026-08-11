@@ -71,10 +71,13 @@ inbound senior-rate consulting. No active selling.
   - [x] `tariffs.py` — flat / F1-F2-F3 / hourly CSV → per-interval price series
     (built early — see the 2026-08-11 (2) session log entry)
   - [x] savings + payback (in `ScenarioResult`, surfaced by the sweep and the CLI table)
-  - [ ] jinja2 report (4 sections), PNG summary card
+  - [x] export price sensitivity (`build_export_sensitivity`, `--export-price-sweep`)
+  - [x] seasonal aggregates (`SeasonalAnalysis`, per-month or per-season)
+  - [x] jinja2 report (4 sections) — `report.py` + `templates/report.md.j2`, `--output`
+  - [ ] PNG summary card
 - [ ] Milestone 3
 
-Suite: 103 tests passing, ruff clean, mypy strict clean.
+Suite: 171 tests passing, ruff clean, mypy strict clean.
 
 ## Validated invariants
 
@@ -114,6 +117,94 @@ Known, accepted: netting at hourly resolution instead of native 30-min moves
 cancels intra-hour deficit). It cancels out of the energy balance and makes the
 battery look slightly *less* valuable, so it is a conservative direction. Direct
 consequence of the locked "downsample to hourly" decision.
+
+## Export price sensitivity (decided, with rationale)
+
+- **Re-costing, never re-simulation.** Greedy self-consumption never reads a price,
+  so the energy flows are identical at every export price and only the costing
+  changes — linearly. `build_export_sensitivity` works from the stored scalars on
+  a finished `ScenarioResult`:
+  `savings(p') = savings(p) - (baseline_export - simulated_export) * (p' - p)`.
+  No dataframe is touched. `test_recosting_agrees_with_a_full_rerun_at_that_price`
+  pins the shortcut against an actual second `run_analysis`, so if v2's tariff
+  arbitrage ever makes the strategy price-aware, that test fails rather than the
+  numbers silently going wrong.
+- **Invariant: savings are non-increasing as the export price rises.** A battery can
+  only reduce export, so the bracket above is non-negative. Economically: the
+  battery's value is the *spread* it captures by keeping a kWh rather than selling
+  it, and a better feed-in tariff shrinks that spread. Verified against the cost
+  equation, not against intuition, and asserted under flat and banded import prices.
+- **The default sweep includes the configured price** (0.5x / 1x / 1.5x), so the
+  user's own case sits inside the trend instead of beside it. A zero configured
+  price steps absolutely (0 / 0.05 / 0.10) rather than scaling, which would
+  collapse all three points onto zero.
+
+## Seasonal analysis (decided, with rationale)
+
+- **One reference capacity: the one the Verdict recommends.** Originally the largest
+  simulated, on the reasoning that surplus still exported there is surplus *no* battery
+  in the sweep could have used. That was true but described the wrong battery: the
+  Verdict recommended 5 kWh while the seasonal table showed 20 kWh at 94-100%
+  self-consumption where the recommended unit gives 59%. A reader skimming takes the
+  table as their result, so the two sections must name the same battery. A grid of
+  every capacity against every month would bury the finding either way.
+- **The ceiling survives as a figure, not as the framing.** `SeasonalAnalysis` carries
+  `largest_capacity_kwh` + `largest_capacity_unused_surplus_kwh`, rendered as one
+  sentence ("Even the largest battery in this sweep (20 kWh) would have left 107 kWh
+  of surplus unused"). That is the only claim the largest capacity can honestly support
+  once it is not the battery being described, and `is_ceiling` suppresses the sentence
+  when the recommendation *is* the largest, where it would just restate the table.
+- **"Unused surplus" changed meaning with the reference and the wording changed with it.**
+  Against the largest capacity it meant "no battery in this sweep could have used it";
+  against the recommended one it means "*this* battery could not store it — a larger one
+  might have", which is a weaker claim and is now worded as such.
+- **`recommended_scenario` lives in `analysis.py`**, not in each consumer. The Verdict,
+  the terminal summary and the seasonal breakdown all call it, so they cannot name three
+  different batteries. It was duplicated in `report.py` and `cli.py` before.
+- **Aggregated from the already-simulated frame**, kept in `run_analysis` for exactly
+  this purpose — the seasonal section costs no extra simulation.
+- **Monthly at >= 4 months of data, meteorological quarters below that**: three
+  monthly rows read as noise rather than seasonality.
+- **Season labels are month ranges ("Jun-Aug"), not names.** The fixture is
+  Australian; printing "Summer" for a Sydney June would be a factual error in a
+  report whose whole selling point is that its numbers are real.
+- Bucket sort keys are `year*12 + month`, so a July→June dataset (the fixture)
+  orders correctly across the new year instead of resetting.
+
+## Report (decided, with rationale)
+
+- **Markdown is the primary format.** Renders on GitHub, pastes into Reddit and the
+  HA forums with tables intact, diffs cleanly, needs no browser — which is exactly
+  where this audience shares results.
+- **The template contains no computation.** Every number comes from `AnalysisResult`;
+  jinja2 only formats, through a small filter vocabulary (`annual`, `eur`, `kwh`,
+  `cap`, `pct`, `price`, `years`, `round0`). `annual` is the only filter that does
+  arithmetic, and it does the one conversion (period total → per year) that would
+  otherwise be repeated at every call site.
+- **`StrictUndefined`**: a typo'd field name fails at render time rather than printing
+  an empty cell into a report someone is about to spend money on.
+- **`cap` is separate from `kwh`** so capacities render "5 kWh", not "5.0 kWh" — a
+  nameplate the user typed and expects echoed back, versus a measured quantity where
+  a decimal carries information.
+- **Whitespace control is the real hazard in a Markdown template.** Inline `{% for %}`
+  loops swallow the newlines Markdown needs and silently collapse a table onto one
+  line; it renders as a paragraph of pipes and is easy to miss in a diff.
+  `test_sensitivity_table_renders_as_valid_markdown_rows` checks column counts are
+  uniform, which is what catches it.
+- **"Limits & assumptions" is unconditional** — a report that drops its caveats when
+  the numbers look good is the exact failure mode this tool exists to avoid. Tested.
+- **Annualization divides by 365, not 365.25.** The Julian year scaled every headline
+  figure by 0.07%, so the report printed PV 5,119 where the fixture's own column sums
+  to 5,115.2. A 0.07% correction buys nothing and costs the one property this tool
+  sells: a user who sums their CSV in a spreadsheet must find the report's number.
+  **Invariant, tested:** at `days_analyzed == 365` annualization is the identity, and
+  every headline energy figure equals the sum of the input column to the precision
+  printed. It applies to savings and cycles too, not just the visible energy totals —
+  it was one shared constant, so a partial fix would have left those quietly scaled.
+- **`annualization_years` is defined once, in `report.py`, and imported by `cli.py`.**
+  Both annualize the same scenarios; two copies of the constant meant one run could
+  print two different annual savings depending on where you read it. A CLI test renders
+  both outputs from a single run and compares the figures.
 
 ## DST handling (decided, with rationale)
 
@@ -229,3 +320,56 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   **Next: Milestone 2 proper** — jinja2 report (4 fixed sections) + matplotlib
   summary card. The CLI's plain-text sections map 1:1 onto the report's, so the
   renderer can consume `AnalysisResult` + `IngestReport` without new engine work.
+- **2026-08-11 (4)** — **Milestone 2, part 1.** Export price sensitivity + Markdown
+  report. Suite 103 → 160, ruff and mypy strict clean.
+
+  Added `build_export_sensitivity` (pure re-costing, no re-simulation), per-month/season
+  aggregates, `report.py` + `templates/report.md.j2`, and the `--export-price-sweep` /
+  `--output` flags. Rationale for all three is in the new sections above. `cli.py`'s
+  `_describe_tariff` moved to `report.py` and is now shared, since terminal output and
+  report must never describe the same tariff differently.
+
+  *That last prediction was half right.* The renderer did consume `AnalysisResult`
+  without new engine work — but only for the two sections that already existed.
+  Seasonal analysis had no engine support at all, so it needed new models and a new
+  aggregation path before a single line of template could be written. Worth carrying
+  into M3: "the report just formats existing numbers" is true per-section, and a
+  section that has never been computed is not a formatting task. Check each section
+  against the engine, not the report as a whole.
+
+  Verified on the Ausgrid fixture: all four capacity rows reproduce session (3)'s
+  figures exactly, which cross-checks the whole new layer against the old path. The
+  export sweep is the section that earns its place — at 0.05 EUR/kWh export the 5 kWh
+  battery pays back in 10.2 y, at 0.15 it takes 23.7 y. Same battery, same data, same
+  simulation; the export price more than doubles the payback. The seasonal table shows
+  why the fixture's payback is long: self-consumption after the battery is 94-100%
+  every single month, so unused surplus is already near zero and no larger battery can
+  help — the ceiling is the roof, not the storage.
+
+  One implementation trap, now pinned by a test: the sensitivity table collapsed onto
+  a single line because inline `{% for %}` loops eat the newlines Markdown needs.
+  It renders as a wall of pipes and would have shipped unnoticed.
+
+  **Next: Milestone 2 part 2** — the matplotlib PNG summary card.
+- **2026-08-11 (5)** — **Two report corrections**, both found by reading the generated
+  report against the source data rather than by a failing test. Suite 160 → 171.
+
+  *Annualization drift.* The report divided by 365.25 and printed PV 5,119 / import
+  6,370 / export 3,804 where the fixture's own columns sum to 5,115.2 / 6,365.5 /
+  3,801.5. Now 365, so a full year is the identity. The lesson worth carrying: the
+  bug was invisible to every existing test because all 160 of them compared the report
+  against the engine, and the engine and the report agreed — both were 0.07% away from
+  the user's file. **A test suite that only checks internal consistency cannot catch a
+  layer that is uniformly wrong.** The new test asserts against the *input* totals.
+
+  *Seasonal section described the wrong battery.* Verdict said 5 kWh, seasonal table
+  said 20 kWh, and its 94-100% self-consumption column read as the reader's result when
+  the recommended unit gives 59%. Both now follow `recommended_scenario`, moved into
+  `analysis.py` from the two places that had copied it. Rationale in the sections above.
+
+  Verified end to end on the Ausgrid fixture: all four capacity rows still reproduce
+  session (3)'s figures exactly, PV/consumption now match the raw column sums to the
+  digit, and `import + pv - export` reconciles (6,366 + 5,115 − 3,802 = 7,679). The
+  ~55 kWh gap against the raw 30-minute derived import/export is the known, documented
+  hourly-netting effect and cancels out of the balance. Both fixes were mutation-checked
+  by reintroducing the old constant and the old reference capacity.

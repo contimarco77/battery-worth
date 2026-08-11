@@ -23,7 +23,7 @@ from typing import Annotated, NoReturn
 import pandas as pd
 import typer
 
-from battery_worth.analysis import run_analysis
+from battery_worth.analysis import recommended_scenario, run_analysis
 from battery_worth.ingest import load_energy_data
 from battery_worth.models import (
     AnalysisResult,
@@ -34,6 +34,7 @@ from battery_worth.models import (
     Tariff,
     TariffKind,
 )
+from battery_worth.report import annualization_years, describe_tariff, write_report
 
 app = typer.Typer(
     name="battery-worth",
@@ -61,7 +62,6 @@ DEFAULT_GRID_EXPORT_COL = "grid_export"
 DEFAULT_PV_COL = "pv_production"
 DEFAULT_CONSUMPTION_COL = "consumption"
 
-_DAYS_PER_YEAR = 365.25
 _HEADER_SAMPLE_LIMIT = 40
 
 
@@ -94,6 +94,13 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         str, typer.Option(help="Price column (EUR/kWh) in the hourly price CSV")
     ] = "price",
     export_price: Annotated[float, typer.Option(help="Export remuneration, EUR/kWh")] = 0.10,
+    export_price_sweep: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated export prices to re-cost the sweep at, EUR/kWh "
+            "(default: three points around --export-price)"
+        ),
+    ] = None,
     # --- battery ---
     battery_cost_per_kwh: Annotated[
         float | None, typer.Option(help="Installed cost per usable kWh, for payback")
@@ -113,6 +120,12 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         DEFAULT_PV_COL
     ),
     col_consumption: Annotated[str | None, typer.Option(help="Consumption column name")] = None,
+    # --- output ---
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Write the full Markdown report to this file (terminal output is "
+                          "unaffected)"),
+    ] = None,
 ) -> None:
     """Run the retrospective what-if analysis and print the results."""
     tariff = _build_tariff(
@@ -126,6 +139,7 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         export_price=export_price,
     )
     capacity_list = _parse_capacities(capacities)
+    export_sweep = _parse_export_prices(export_price_sweep)
 
     try:
         template = BatterySpec(
@@ -162,6 +176,7 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
                 battery_template=template,
                 tariff=tariff,
                 battery_cost_per_kwh=battery_cost_per_kwh,
+                export_price_sweep=export_sweep,
             )
         except ValueError as exc:
             _fail(str(exc))
@@ -170,6 +185,14 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     runtime_warnings = [str(w.message) for w in captured]
 
     _print_report(result, report, tariff, runtime_warnings)
+
+    if output is not None:
+        all_warnings = [*report.warnings, *runtime_warnings]
+        try:
+            write_report(output, result, tariff, all_warnings)
+        except OSError as exc:
+            _fail(f"Could not write the report to '{output}': {exc}")
+        typer.echo(f"Report written to {output}")
 
 
 def _parse_capacities(raw: str) -> list[float]:
@@ -189,6 +212,31 @@ def _parse_capacities(raw: str) -> list[float]:
             )
     if any(v < 0 for v in values):
         _fail("--capacities must be zero or positive kWh values.")
+    return values
+
+
+def _parse_export_prices(raw: str | None) -> list[float] | None:
+    """Parse --export-price-sweep. None means 'let the analysis pick its defaults'."""
+    if raw is None:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        _fail(
+            "--export-price-sweep is empty. Pass something like "
+            "--export-price-sweep 0,0.05,0.10,0.15, or omit it for the default range."
+        )
+
+    values: list[float] = []
+    for part in parts:
+        try:
+            values.append(float(part))
+        except ValueError:
+            _fail(
+                f"--export-price-sweep contains '{part}', which is not a number. "
+                "Expected a comma-separated list of EUR/kWh values, e.g. 0,0.05,0.10."
+            )
+    if any(v < 0 for v in values):
+        _fail("--export-price-sweep must contain zero or positive EUR/kWh values.")
     return values
 
 
@@ -422,7 +470,7 @@ def _print_report(
         echo(f"  Gaps              {report.gaps_count} ({report.gaps_total_hours:.1f} h total)")
     if report.negative_values_clipped:
         echo(f"  Negatives clipped {report.negative_values_clipped}")
-    echo(f"  Tariff            {_describe_tariff(tariff)}")
+    echo(f"  Tariff            {describe_tariff(tariff)}")
 
     _print_warnings(report.warnings, runtime_warnings)
     _print_scenarios(result)
@@ -456,13 +504,13 @@ def _print_scenarios(result: AnalysisResult) -> None:
     echo(header)
     echo(f"  {'-' * (len(header) - 2)}")
 
-    years = max(result.days_analyzed / _DAYS_PER_YEAR, 1e-9)
+    years = annualization_years(result.days_analyzed)
     for scenario in result.scenarios:
         echo(f"  {_scenario_row(scenario, years)}")
 
     echo("")
     echo(f"  Savings and cycles are annualized over {result.days_analyzed} days of data.")
-    best = _best_scenario(result.scenarios)
+    best = recommended_scenario(result.scenarios)
     if best is not None:
         payback = best.payback_years()
         verdict = (
@@ -499,23 +547,6 @@ def _scenario_row(scenario: ScenarioResult, years: float) -> str:
         f"{label:>9}  {savings_per_year:>10,.0f}€  {payback_text:>9}  "
         f"{cycles_text:>10}  {self_cons:>19}  {cost_text:>9}"
     )
-
-
-def _best_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult | None:
-    """The scenario to highlight: shortest payback if costs are known, else best savings.
-
-    Shortest payback rather than largest savings, because the largest battery
-    always saves the most in absolute terms while often being the worst investment
-    — that gap is the entire point of the comparison table.
-    """
-    with_payback = [(s.payback_years(), s) for s in scenarios]
-    priced = [(p, s) for p, s in with_payback if p is not None]
-    if priced:
-        return min(priced, key=lambda pair: pair[0])[1]
-    earning = [s for s in scenarios if s.savings_eur > 0]
-    if not earning:
-        return None
-    return max(earning, key=lambda s: s.savings_eur)
 
 
 def _print_seasonality(result: AnalysisResult) -> None:
@@ -558,19 +589,6 @@ def _print_limits() -> None:
     ):
         echo(_wrap(f"  - {line}", width=76, indent="    "))
     echo("")
-
-
-def _describe_tariff(tariff: Tariff) -> str:
-    if tariff.kind is TariffKind.FLAT:
-        base = f"flat {tariff.flat_price_eur_kwh:g} EUR/kWh"
-    elif tariff.kind is TariffKind.F1_F2_F3:
-        base = (
-            f"Italian bands F1 {tariff.f1_price:g} / F2 {tariff.f2_price:g} / "
-            f"F3 {tariff.f3_price:g} EUR/kWh"
-        )
-    else:
-        base = f"hourly prices from {tariff.hourly_prices_csv}"
-    return f"{base}, export {tariff.export_price_eur_kwh:g} EUR/kWh"
 
 
 def _wrap(text: str, width: int, indent: str) -> str:

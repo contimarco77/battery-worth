@@ -130,7 +130,7 @@ def main() -> None:
     print(f"  period      : {out.index.min()} -> {out.index.max()}")
     print(f"  PV total    : {out['pv_production'].sum():.0f} kWh")
     print(f"  consumption : {out['consumption'].sum():.0f} kWh")
-    gaps = pd.date_range(out.index.min(), out.index.max(), freq="30min").difference(out.index)
+    gaps = pd.date_range(out.index.min(), out.index.max(), freq="30min").difference(out.index)  # type: ignore
     print(f"  missing slots: {len(gaps)}")
 
 

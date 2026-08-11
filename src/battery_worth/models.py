@@ -176,6 +176,123 @@ class ScenarioResult(BaseModel):
         return self.battery_cost_eur / self.savings_eur
 
 
+class ExportPricePoint(BaseModel):
+    """One (capacity, export price) cell of the sensitivity grid.
+
+    Savings here are for the whole analyzed period, exactly like `ScenarioResult`;
+    the report annualizes them at render time.
+    """
+
+    capacity_kwh: float
+    export_price_eur_kwh: float = Field(ge=0)
+    savings_eur: float
+    payback_years: float | None = None
+
+
+class ExportPriceSensitivity(BaseModel):
+    """Savings and payback re-costed across a range of export remuneration prices.
+
+    The spread between import price and export remuneration is the dominant lever
+    on battery ROI: every kWh the battery keeps on-site is worth
+    `import_price - export_price`, so a generous feed-in tariff is what makes a
+    battery *not* pay off. This grid makes that visible instead of hiding it inside
+    a single configured number.
+    """
+
+    export_prices: list[float]
+    baseline_export_price_eur_kwh: float = Field(
+        ge=0, description="The configured export price the analysis itself was costed at"
+    )
+    points: list[ExportPricePoint]
+
+    def for_capacity(self, capacity_kwh: float) -> list[ExportPricePoint]:
+        """The row of the grid for one capacity, in ascending export-price order."""
+        return [p for p in self.points if p.capacity_kwh == capacity_kwh]
+
+
+class SeasonalBucket(BaseModel):
+    """Aggregates for one month or season of the analyzed period.
+
+    This is where a reader learns *why* their payback is what it is: a summer of
+    wasted surplus and a winter of uncovered deficit produce the same annual
+    average by very different routes, and only one of them is fixed by a bigger
+    battery.
+    """
+
+    label: str = Field(description="Human label, e.g. '2012-07' or 'Summer'")
+    sort_key: int = Field(description="Chronological order within the period")
+    days: int
+
+    pv_kwh: float
+    consumption_kwh: float
+
+    baseline_import_kwh: float
+    baseline_export_kwh: float
+    simulated_import_kwh: float
+    simulated_export_kwh: float
+
+    self_consumption_before: float = Field(ge=0, le=1)
+    self_consumption_after: float = Field(ge=0, le=1)
+    savings_eur: float
+
+    @property
+    def unused_surplus_kwh(self) -> float:
+        """PV exported even *with* the battery: surplus the battery could not absorb.
+
+        The headline number of this section. Large in summer means the battery is
+        capacity- or power-bound against real available energy; near zero means
+        more capacity would buy nothing in that period.
+        """
+        return self.simulated_export_kwh
+
+    @property
+    def uncovered_deficit_kwh(self) -> float:
+        """Grid import still needed with the battery: demand PV+battery never met."""
+        return self.simulated_import_kwh
+
+
+class SeasonalAnalysis(BaseModel):
+    """Per-period breakdown for one reference capacity: the recommended one.
+
+    Tied to a single capacity on purpose: the seasonal story is about *this*
+    battery against the user's own year, and a grid of every capacity against
+    every month would bury it. That capacity is the one the Verdict recommends,
+    so the report never describes two different batteries in adjacent sections.
+
+    The largest swept capacity is carried alongside as a *ceiling*, not as the
+    subject of the section: it answers "would a bigger battery have helped?" in
+    one figure, which is the only claim the largest capacity can honestly support
+    once it is no longer the battery being described.
+    """
+
+    capacity_kwh: float = Field(description="The recommended capacity, described by the buckets")
+    granularity: str = Field(description="'month' or 'season'")
+    buckets: list[SeasonalBucket]
+
+    largest_capacity_kwh: float = Field(
+        description="Largest capacity in the sweep, the ceiling reference"
+    )
+    largest_capacity_unused_surplus_kwh: float = Field(
+        ge=0,
+        description="Surplus still exported at the largest swept capacity: energy no "
+        "battery in this sweep could have stored",
+    )
+
+    @property
+    def unused_surplus_kwh(self) -> float:
+        """Surplus the *recommended* battery could not store, over the whole period."""
+        return sum(b.unused_surplus_kwh for b in self.buckets)
+
+    @property
+    def is_ceiling(self) -> bool:
+        """True when the recommended capacity is also the largest swept.
+
+        The two ceiling fields then say nothing the table does not already show,
+        and the report drops the extra sentence rather than restating the section.
+        """
+        return self.capacity_kwh == self.largest_capacity_kwh
+
+
 class AnalysisResult(BaseModel):
     """Full analysis: one entry per swept capacity, plus data-quality metadata."""
 
@@ -187,3 +304,5 @@ class AnalysisResult(BaseModel):
     seasonality_warning: bool = Field(
         description="True when < 365 days of data: results may not capture seasonality"
     )
+    export_sensitivity: ExportPriceSensitivity | None = None
+    seasonal: SeasonalAnalysis | None = None
