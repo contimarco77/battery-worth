@@ -24,10 +24,12 @@ from pathlib import Path
 
 import pytest
 from matplotlib.axes import Axes
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.text import Text
+from matplotlib.transforms import Bbox
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL, REPO_URL
 from battery_worth.analysis import run_analysis
@@ -462,6 +464,174 @@ def test_no_bar_touches_the_top_of_its_panel(
             assert lowest - bottom >= span * 0.10, (
                 f"{panel}: the lowest bar needs room for its label"
             )
+
+
+def axis_overruns(figure: Figure) -> list[str]:
+    """Every bar or bar label that crosses one of its panel's horizontal edges.
+
+    Measured in *pixels*, against the rendered extent of the artists, because that
+    is the space the defect lives in. `test_no_bar_touches_the_top_of_its_panel`
+    checks bar heights against the y-limits in data units, and that check passed on
+    a card whose label was visibly outside the axis: the bar was comfortably inside
+    the limits while the text drawn above it was not. Only the drawn extent can
+    catch that, so the figure is drawn and each artist asked where it landed.
+    """
+    figure.canvas.draw()
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+
+    faults: list[str] = []
+    for axes in figure.axes:
+        box = axes.get_window_extent()
+        panel = axes.get_title(loc="left")
+        artists: list[tuple[str, Bbox]] = [
+            (f"bar {bar.get_height():.4g}", bar.get_window_extent(renderer))
+            for bar in bars_of(axes)
+        ]
+        artists += [
+            (f"label {text.get_text()!r}", text.get_window_extent(renderer))
+            for text in axes.texts
+        ]
+        for name, extent in artists:
+            if extent.y1 > box.y1:
+                faults.append(
+                    f"{panel}: {name} overruns the top by {extent.y1 - box.y1:.1f}px"
+                )
+            if extent.y0 < box.y0:
+                faults.append(
+                    f"{panel}: {name} underruns the bottom by {box.y0 - extent.y0:.1f}px"
+                )
+    return faults
+
+
+@pytest.mark.parametrize(
+    ("capacities", "cost", "days", "tariff"),
+    [
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], None, 365, FLAT_TARIFF),
+        ([10], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 60, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, LOSING_TARIFF),
+        ([0, 5, 10, 15, 20], 600.0, 365, FLAT_TARIFF),
+    ],
+)
+def test_no_bar_or_label_is_drawn_outside_its_panel(
+    capacities: list[float], cost: float | None, days: int, tariff: Tariff
+) -> None:
+    """The invariant, stated where it can actually be violated: rendered pixels.
+
+    A label drawn past the axis edge is clipped by the panel or collides with the
+    band above it, and either way the card ships a number the reader cannot read.
+    The data-unit check next door cannot see this, because the padding it verifies
+    is a fraction of the *data span* while the label is placed at a fixed offset in
+    *points* — so the same 15% is a different number of pixels on every panel, and
+    whether it covered the text depended on how tall that panel happened to be.
+    """
+    figure = build_summary_card(
+        build(capacities=capacities, cost_per_kwh=cost, days=days, tariff=tariff),
+        tariff=tariff,
+    )
+    assert axis_overruns(figure) == []
+
+
+def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
+    """303 against a 300 gridline — the geometry that actually broke the card.
+
+    The 60-day card's savings axis ran to a 300 tick while its tallest bar was 303,
+    and the "303 EUR" label was drawn past the top of the panel. It is the worst
+    case for the padding because the bar sits as close to the top gridline as it can
+    without passing it, leaving the label the least room, and it is exactly the
+    arrangement a fractional allowance is most likely to get wrong. Pinned with the
+    savings driven to that value rather than left to whichever fixture happens to
+    produce it, so the case cannot quietly stop being tested when a number moves.
+
+    **Both halves of the geometry are needed.** The awkward value alone does not
+    reproduce it: on a full-year card, whose panels are the tallest the layout
+    produces, the old fractional padding covered the label with a few pixels to
+    spare. The seasonality band on a partial-year card takes a slice of the chart
+    height, and it is the shorter panel that turns those few pixels negative — so
+    this fixture carries the 60-day period as well as the 303.
+    """
+    result = build(days=60)
+    # The card plots *annual* savings, so the raw period savings are scaled back
+    # through the same `annualization_years` the renderer divides by — setting
+    # `simulated_cost_eur` naively would land these targets 6x too high.
+    years = annualization_years(result.days_analyzed)
+    targets = {5.0: 199.0, 10.0: 288.0, 15.0: 303.0}
+    pinned = [
+        s.model_copy(
+            update={
+                "simulated_cost_eur": s.baseline_cost_eur - targets[s.capacity_kwh] * years
+            }
+        )
+        if s.capacity_kwh in targets
+        else s
+        for s in result.scenarios
+    ]
+    result = result.model_copy(update={"scenarios": pinned})
+
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    savings_axes = figure.axes[0]
+
+    # The fixture has to actually be the awkward case, or the test is vacuous.
+    assert max(bar.get_height() for bar in bars_of(savings_axes)) == pytest.approx(303.0)
+    ticks = [t for t in savings_axes.get_yticks() if t <= 303.0]
+    assert max(ticks) == pytest.approx(300.0), "the bar must sit just above a tick"
+
+    assert axis_overruns(figure) == []
+
+
+def test_a_clipped_bar_label_is_inside_the_panel_too() -> None:
+    """The clipped bar's label sits at double the usual gap, and must still fit.
+
+    It is the one label the padding could most easily miss: the bar is already at
+    the axis cap by construction, and the label is pushed further out than any
+    other to clear the break stub drawn above it.
+    """
+    result = build(capacities=[0, 5, 10, 15], cost_per_kwh=DEFAULT_COST_PER_KWH)
+    inflated = [
+        s.model_copy(update={"battery_cost_eur": s.battery_cost_eur * 8})
+        if s.capacity_kwh == 15 and s.battery_cost_eur is not None
+        else s
+        for s in result.scenarios
+    ]
+    result = result.model_copy(update={"scenarios": inflated})
+
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    payback_axes = figure.axes[1]
+    assert len(payback_axes.patches) > len(bars_of(payback_axes)), (
+        "this fixture must actually clip a bar"
+    )
+    assert axis_overruns(figure) == []
+
+
+def test_bar_label_gaps_are_uniform_regardless_of_weight() -> None:
+    """The bold label and the regular ones sit the same distance from their bars.
+
+    The emphasized label carries the recommendation, so it is the one that must not
+    look misplaced — and a gap that varied with font weight would put the card's
+    most important number at a different distance from its bar than every other,
+    which reads as a mistake rather than as emphasis.
+    """
+    figure = build_summary_card(build(), tariff=FLAT_TARIFF)
+    figure.canvas.draw()
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+
+    for axes in figure.axes:
+        bars = bars_of(axes)
+        assert any(t.get_fontweight() == "bold" for t in axes.texts), (
+            "this panel must actually mix weights, or the test proves nothing"
+        )
+        gaps = [
+            text.get_window_extent(renderer).y0 - bar.get_window_extent(renderer).y1
+            for bar, text in zip(bars, axes.texts, strict=True)
+        ]
+        assert max(gaps) - min(gaps) < 0.5, (
+            f"{axes.get_title(loc='left')}: label gaps differ by weight: {gaps}"
+        )
 
 
 def test_the_losing_panel_is_not_padded_into_empty_space_above_zero() -> None:

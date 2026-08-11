@@ -188,12 +188,20 @@ _STATEMENT_BAND = 0.115
 # two-capacity sweep produces narrow bars in a wide panel rather than slabs.
 _MIN_SLOTS = 4
 
-# Fractions of the data span added beyond the extreme bars. `_LABEL_HEADROOM` goes
-# on whichever side carries the direct labels and has to fit a line of text plus
-# its offset; `_EDGE_MARGIN` is the bare clearance that keeps a bar from ending on
-# the frame, where it reads as clipped rather than as finished.
+# Fractions of the data span added beyond the extreme bars. `_LABEL_HEADROOM` is
+# the *floor* under the measured allowance computed in `_label_headroom_px`, not
+# the allowance itself: it keeps a panel from hugging its tallest bar when the
+# labels happen to be short. `_EDGE_MARGIN` is the bare clearance that keeps a bar
+# from ending on the frame, where it reads as clipped rather than as finished.
 _LABEL_HEADROOM = 0.15
 _EDGE_MARGIN = 0.04
+
+# The gap between a bar's top edge and its label, in points, and the clearance
+# left between the label and the axis edge beyond it. Both are screen quantities
+# because that is what the reader sees: a gap specified as a fraction of the data
+# span is a different number of pixels on every panel.
+_LABEL_GAP_PT = 7.0
+_LABEL_CLEARANCE_PT = 4.0
 
 _BRAND = PROJECT_NAME
 _REPO_URL = REPO_DISPLAY_URL
@@ -777,9 +785,11 @@ def _draw_savings_panel(
     for position, value, scenario in zip(positions, values, scenarios, strict=True):
         emphasized = best is not None and scenario.capacity_kwh == best.capacity_kwh
         below = value < 0
+        # One gap, stated once, applied in whichever direction the label sits.
+        offset = -_LABEL_GAP_PT if below else _LABEL_GAP_PT
         axes.annotate(
             f"{value:,.0f} EUR",
-            xy=(position, value), xytext=(0, -7 if below else 7),
+            xy=(position, value), xytext=(0, offset),
             textcoords="offset points",
             ha="center", va="top" if below else "bottom",
             fontfamily=_FONT, fontsize=_SIZE_AXIS + 1,
@@ -844,7 +854,7 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
         axes.annotate(
             text,
             # Clipped bars carry a stub above the cap; the label clears it.
-            xy=(position, y), xytext=(0, 14 if clipped else 7),
+            xy=(position, y), xytext=(0, _LABEL_GAP_PT * (2 if clipped else 1)),
             textcoords="offset points",
             ha="center", va="bottom", fontfamily=_FONT, fontsize=_SIZE_AXIS + 1,
             fontweight="bold" if emphasized else "normal",
@@ -853,7 +863,13 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
 
     # Against `drawn`, not `paybacks`: the clipped heights are what the axis has to
     # contain. Padding to a 300-year true value would collapse the panel to a strip.
-    _pad_range(axes, drawn)
+    #
+    # A clipped bar's label sits at double the usual gap so it clears the stub, so
+    # the panel has to reserve that much: padding for the ordinary offset would put
+    # the tallest label back outside the axis, which is the defect this padding
+    # exists to prevent, reintroduced by the one bar most likely to hit it.
+    clipped_any = any(p is not None and p > cap for p in paybacks)
+    _pad_range(axes, drawn, extra_offset_pt=_LABEL_GAP_PT if clipped_any else 0.0)
 
 
 def _draw_zero_line(axes: Axes, values: list[float]) -> None:
@@ -972,7 +988,57 @@ def _set_capacity_ticks(
     )
 
 
-def _pad_range(axes: Axes, values: list[float]) -> None:
+def _label_headroom_px(axes: Axes, extra_offset_pt: float = 0.0) -> float:
+    """Pixels a bar label needs beyond its bar: the gap, the text, and clearance.
+
+    Measured rather than assumed, because the quantity being reserved is a screen
+    quantity. The label is placed at a fixed point offset from the bar top and is a
+    fixed number of points tall, so the room it needs is a constant in *pixels* —
+    while `_pad_range` reserves room as a fraction of the *data span*, which is a
+    different number of pixels on every panel. Whether the fraction covered the
+    label was therefore a coincidence of how tall that panel happened to be laid
+    out, and on the 60-day card, whose panels are shorter than the fixture's
+    because the seasonality band takes a slice of the height, the coincidence
+    failed: the 303 EUR label crossed the axis top by 3 px, and the 29.7 payback
+    label by the same. The fixture's own tallest label cleared by 3.5 px, which is
+    the same defect that had not yet crossed zero.
+
+    Reading the rendered extent of an actual label removes the coincidence: the
+    caller converts these pixels into data units for the panel it is padding, so
+    every panel reserves the room its labels really occupy.
+    """
+    figure = axes.get_figure()
+    assert figure is not None  # an axes added via `add_axes` always has one
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)  # attached in `_build`
+    # matplotlib ships no stubs, so `get_renderer` is untyped to mypy strict.
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+
+    # Any label string measures the same height — DejaVu's vertical metrics do not
+    # depend on the glyphs, or on the weight — so a probe stands in for all of them.
+    probe = figure.text(0, 0, "0", fontfamily=_FONT, fontsize=_SIZE_AXIS + 1)
+    height = probe.get_window_extent(renderer=renderer).height
+    probe.remove()
+
+    points_to_px = figure.dpi / 72.0
+    gap = _LABEL_GAP_PT + extra_offset_pt + _LABEL_CLEARANCE_PT
+    return height + gap * points_to_px
+
+
+def _data_units_per_px(axes: Axes, span: float) -> float:
+    """How many data units one vertical pixel is worth on this panel.
+
+    Derived from the axes' own height in pixels against the data span it currently
+    shows, which is what lets a pixel allowance be converted into the units
+    `set_ylim` speaks.
+    """
+    height_px = axes.get_window_extent().height
+    if height_px <= 0:
+        return 0.0
+    return span / height_px
+
+
+def _pad_range(axes: Axes, values: list[float], extra_offset_pt: float = 0.0) -> None:
     """Set the y-range so every bar clears the axis edges and every label fits.
 
     Three things to get right, and only the first is cosmetic.
@@ -982,9 +1048,13 @@ def _pad_range(axes: Axes, values: list[float]) -> None:
     case — it is the ordinary case, and without room above it the number is drawn
     outside the axes and clipped. Just as bad without any clipping: a bar whose top
     lands on the frame reads as *truncated*, as though the panel could not contain
-    its own value. `_LABEL_HEADROOM` is the room for the label, deliberately larger
-    than `_EDGE_MARGIN`, which is only the visual breathing room a bar with nothing
-    written past it needs.
+    its own value.
+
+    The allowance is the **measured** one from `_label_headroom_px`, converted into
+    data units for this panel, with `_LABEL_HEADROOM` kept only as a floor. A bare
+    fraction of the data span was the actual defect: it is a different number of
+    pixels on every panel, so whether it covered the label depended on how tall the
+    panel happened to be laid out rather than on how tall the label is.
 
     **The padding follows the labels, not the axis.** Labels sit above positive
     bars and below negative ones, so a panel with no negative bar gets no room
@@ -1007,11 +1077,24 @@ def _pad_range(axes: Axes, values: list[float]) -> None:
     if span <= 0:
         axes.set_ylim(0.0, 1.0)
         return
+
+    # The measured allowance, in this panel's data units. Taken against the padded
+    # span rather than the raw one — adding headroom stretches the axis, which
+    # shrinks the data value of a pixel, which would leave the allowance slightly
+    # short of what it was computed to cover. Solving that feedback directly is not
+    # worth it; one pass at the fractional floor is enough to converge.
+    provisional = span * (1.0 + _LABEL_HEADROOM)
+    per_px = _data_units_per_px(axes, provisional)
+    label_room = _label_headroom_px(axes, extra_offset_pt) * per_px
+    # The fraction is the floor, not the answer: it keeps short labels from letting
+    # the axis close right up on the tallest bar.
+    headroom = max(label_room, span * _LABEL_HEADROOM)
+
     # Zero is an endpoint whenever no bar crosses it, and it gets the small edge
     # margin rather than the label allowance: nothing is ever written past zero on
     # the empty side.
-    top = tallest + span * (_LABEL_HEADROOM if tallest > 0 else _EDGE_MARGIN)
-    bottom = lowest - span * (_LABEL_HEADROOM if lowest < 0 else _EDGE_MARGIN)
+    top = tallest + (headroom if tallest > 0 else span * _EDGE_MARGIN)
+    bottom = lowest - (headroom if lowest < 0 else span * _EDGE_MARGIN)
     axes.set_ylim(bottom, top)
 
 
