@@ -31,6 +31,7 @@ from battery_worth.models import (
     SeasonalAnalysis,
     SeasonalBucket,
     Tariff,
+    annualization_years,
 )
 from battery_worth.simulator import simulate_battery, summarize_scenario
 from battery_worth.tariffs import build_price_series
@@ -96,7 +97,12 @@ def run_analysis(  # noqa: PLR0913, PLR0917 - the sweep genuinely needs all six 
     for capacity in unique_capacities:
         if capacity <= _ZERO_CAPACITY_TOLERANCE:
             scenarios.append(
-                _baseline_scenario(df, import_prices, tariff.export_price_eur_kwh)
+                _baseline_scenario(
+                    df,
+                    import_prices,
+                    tariff.export_price_eur_kwh,
+                    days_analyzed=ingest_report.days_analyzed,
+                )
             )
             continue
 
@@ -111,6 +117,10 @@ def run_analysis(  # noqa: PLR0913, PLR0917 - the sweep genuinely needs all six 
                 import_prices,
                 export_price=tariff.export_price_eur_kwh,
                 battery_cost_eur=cost,
+                # From the ingest report, not counted off the frame: it is the
+                # authoritative period length, and every scenario in one sweep must
+                # annualize against the same number.
+                days_analyzed=ingest_report.days_analyzed,
             )
         )
 
@@ -201,7 +211,9 @@ def build_export_sensitivity(
                     capacity_kwh=scenario.capacity_kwh,
                     export_price_eur_kwh=price,
                     savings_eur=savings,
-                    payback_years=_payback(scenario.battery_cost_eur, savings),
+                    payback_years=_payback(
+                        scenario.battery_cost_eur, savings, scenario.days_analyzed
+                    ),
                 )
             )
 
@@ -238,15 +250,20 @@ def _resolve_export_prices(
     return sorted({round(configured * f, 6) for f in _DEFAULT_SENSITIVITY_FACTORS})
 
 
-def _payback(battery_cost_eur: float | None, savings_eur: float) -> float | None:
+def _payback(
+    battery_cost_eur: float | None, savings_eur: float, days_analyzed: int
+) -> float | None:
     """Naive payback, matching `ScenarioResult.payback_years` exactly.
 
-    Kept consistent with the model's own rule: no cost or no positive savings means
-    no payback, never a zero or a negative number that would read as a good result.
+    `savings_eur` here is a **period** total, exactly like the model's, so it is
+    annualized before the division for the same reason: dividing a cost by a period
+    saving yields years only when the period is a year. Kept consistent with the
+    model's other rule too — no cost or no positive savings means no payback, never
+    a zero or a negative number that would read as a good result.
     """
     if battery_cost_eur is None or savings_eur <= 0:
         return None
-    return battery_cost_eur / savings_eur
+    return battery_cost_eur / (savings_eur / annualization_years(days_analyzed))
 
 
 def _build_seasonal(
@@ -369,7 +386,10 @@ def _seasonal_bucket(
 
 
 def _baseline_scenario(
-    df: pd.DataFrame, import_prices: pd.Series, export_price: float
+    df: pd.DataFrame,
+    import_prices: pd.Series,
+    export_price: float,
+    days_analyzed: int,
 ) -> ScenarioResult:
     """The no-battery scenario, built directly rather than simulated.
 
@@ -393,6 +413,7 @@ def _baseline_scenario(
     return ScenarioResult(
         capacity_kwh=0.0,
         battery_cost_eur=None,
+        days_analyzed=days_analyzed,
         total_consumption_kwh=consumption,
         total_pv_kwh=total_pv,
         baseline_import_kwh=baseline_import,

@@ -34,8 +34,10 @@ inbound senior-rate consulting. No active selling.
 - **Tariffs**: flat price, Italian F1/F2/F3 bands, export remuneration price,
   and hourly price series from CSV (this gives dynamic pricing / PUN support
   for free, zero API integrations).
-- **Payback**: battery cost (user input) / year-1 savings. Report must state it
-  ignores degradation and energy price inflation (v2).
+- **Payback**: battery cost (user input) / **annualized** year-1 savings. The
+  annualization is load-bearing, not cosmetic: `savings_eur` is a period total, so
+  dividing by it yields "periods to pay back" and equals years only on a 365-day
+  file. Report must state it ignores degradation and energy price inflation (v2).
 - **Report**: fixed 4 sections — Verdict (annual savings, payback, self-consumption
   before/after), Scenario comparison table, Seasonal analysis,
   "Limits & assumptions" (ALWAYS present).
@@ -77,7 +79,7 @@ inbound senior-rate consulting. No active selling.
   - [x] PNG summary card — `card.py`, written beside `--output`, skipped with `--no-card`
 - [ ] Milestone 3
 
-**Milestone 2 is closed.** Suite: 203 tests passing, ruff clean, mypy strict clean.
+**Milestone 2 is closed.** Suite: 213 tests passing, ruff clean, mypy strict clean.
 
 ## Validated invariants
 
@@ -206,13 +208,64 @@ consequence of the locked "downsample to hourly" decision.
   print two different annual savings depending on where you read it. A CLI test renders
   both outputs from a single run and compares the figures.
 
+## Annualization (decided, with rationale) — READ BEFORE ADDING ANY DERIVED FIGURE
+
+**Two bugs of the same shape have shipped here. Assume a third is possible.**
+
+- Session (5): the report divided by 365.25, so every headline figure sat 0.07% off
+  the user's own column sums.
+- Session (8): `payback_years()` divided cost by **period** savings instead of
+  annual savings, overstating payback by 365/days — 6x on a 60-day file, printed
+  directly beside the annualized savings figure that contradicted it.
+
+Both were invisible to a full suite, for the same reason: **every test compared one
+layer of our code against another, and the layers agreed while being uniformly
+wrong.** Internal consistency cannot detect a uniform error. The fixture is exactly
+365 days long, which is precisely the period where both bugs vanish.
+
+Rules that follow, and that a reviewer should enforce:
+
+- `DAYS_PER_YEAR` and `annualization_years` live in **`models.py`**, the domain
+  layer — not in `report.py`, where they started. Annualization is not formatting:
+  `payback_years()` needs it to produce a correct number at all, so a presentation
+  module cannot own it. `report.py` re-exports the name for its existing callers.
+- `ScenarioResult` carries **`days_analyzed`**. Without it the model physically
+  cannot annualize, which is how the bug was possible: every other field was a
+  period total and nothing on the object knew what the period was.
+- Consumers use **`annual_savings_eur`**, never `savings_eur / years` recomputed
+  locally. `_payback` in `analysis.py` (the export-price grid) needed the same fix
+  separately — it shares neither the model's method nor its period.
+- **Any test of a derived figure must anchor to a hand-computed value written out
+  in the test**, not to another layer of ours. The payback tests state the
+  arithmetic inline (3000 / (32.7 × 365/60) = 15.08) and assert that the same data
+  truncated to 60/180/365 days yields the same payback — a period-invariance check
+  that no internal-consistency test could have expressed.
+
 ## Summary card (decided, with rationale)
 
-- **The headline is the recommended capacity, not the payback.** "5 kWh is enough for
-  this house" is actionable and contradicts what a salesperson told the reader; "14.2
-  years" alone is only discouraging and gets scrolled past. Savings, payback and cost
-  are a subordinate stat row underneath — they make the headline credible, they are not
-  the headline.
+- **The headline names the best investment, and claims nothing more.** It is the
+  largest element and it is actionable — but the wording is constrained by what the
+  numbers support, which took a rewrite to get right. "X kWh is enough for this house"
+  was wrong in three of five cases: it asserted *sufficiency* the tool never measured
+  (5 kWh gives 59% self-consumption where 20 gives 98% — it is the best **investment**,
+  not "enough"); it laundered `recommended_scenario`'s no-cost fallback into a
+  recommendation of the *largest* battery, the exact trap this tool exists to expose;
+  and it made a superlative claim over a single data point. `headline_for` now carries
+  one sentence per case — "5 kWh pays back fastest" with a cost, "Savings flatten
+  beyond 15 kWh" without one, a plain statement for a lone capacity, and an explicit
+  negative when nothing paid off. **Emphasis obeys the same rule**: with no payback,
+  no bar is highlighted, because a lit-up bar under a headline that declined to
+  recommend a size is the picture contradicting the sentence.
+- Savings, payback and cost are a subordinate stat row underneath — they make the
+  headline credible, they are not the headline.
+- **A bar panel is dropped when truncation would invert its meaning.** Past
+  `_BATTERY_LIFETIME_YEARS` (20 y — the generous end of a home-battery warranty, so a
+  payback beyond it is one the hardware is not expected to survive to deliver), the
+  payback panel is replaced by a sentence naming the shortest figure. The trigger was
+  the 60-day card: 91.7 / 126.6 / 181.0 years drawn as three near-identical stubs,
+  implying the paybacks were similar when the longest was double the shortest. **A
+  chart that misstates its own values is worse than no chart** — the clipped-bar
+  treatment (break + detached stub) rescues one outlier, not a whole panel off-scale.
 - **Two stacked panels, never a dual axis.** Savings and payback are different scales,
   and one plot with two y-axes would let the reader read a crossing point that is an
   artifact of how the two axes happened to be aligned. That is a fabricated finding in
@@ -269,6 +322,59 @@ consequence of the locked "downsample to hourly" decision.
   repeat the string (packaging metadata cannot import from its own package), and a test
   pins it against the constant. Tests also assert the literal correct URL, so renaming
   the account cannot make them quietly agree with a new mistake.
+- **Bars are always labelled — a rule, not a per-case decision.** Labelling only the
+  recommended bar left the others mute, so the reader had to walk each one back to a
+  gridline to find its value. That is the arithmetic the card exists to have already
+  done, and worse, the chart's actual argument is the *gaps* between capacities
+  (+79 EUR from 10→15 kWh, +20 from 15→20), which cannot be read off two bars when
+  neither states its number. Emphasis then does what it was always for: the
+  recommended label is bold and full-ink so it still reads first, rather than being
+  the only label that exists.
+- **Headroom is sized for the labels, and only on the side that has them.** Every bar
+  being labelled makes the tallest bar's clearance the ordinary case, not a special
+  one; without it the number is drawn outside the axes and clipped, and a bar landing
+  on the frame reads as truncated. `_LABEL_HEADROOM` (0.15) goes on the labelled side,
+  `_EDGE_MARGIN` (0.04) on the other. **Zero anchors the empty side**: the losing card's
+  axis used to run to +200 with nothing in it, a fifth of the panel spent where the
+  finding is not, flattening the losses it existed to show. Positive and negative
+  panels are therefore *not* padded symmetrically — a test asserting they were was
+  wrong and re-introduced the dead band.
+- **Colour carries the sign.** Bars descending to −1,254 EUR were drawn in the same
+  light blue as bars earning +462, leaving direction to be read off the axis, which is
+  the slowest thing on the panel. Below zero the bars use a desaturated red (`_LOSS`);
+  it is deliberately not saturated, because the headline is already saying the battery
+  lost money and a loud red would out-shout the verdict it illustrates. Sign is the one
+  thing colour encodes here — it is not a category, it is the threshold the card is about.
+- **With nothing recommended, alpha depends on the case, and one rule was wrong for
+  both.** Neither the losing card nor the no-cost card emphasizes a bar. On the losing
+  card the bars *are* the finding, and 0.32 alpha leaves a row of ghosts reading as
+  tentative about a result stated outright — full strength. On the saturating card the
+  finding is the *shape* of the curve; four bars at full strength say nothing more and
+  start competing with the headline — receded.
+- **The stat under the headline must support it, never undercut it.** With no cost the
+  headline says "Savings flatten beyond 15 kWh" and the stat row printed 462 EUR — the
+  20 kWh figure, i.e. the size the headline was implicitly advising against. The two sit
+  two centimetres apart and are read as one statement, so whichever the reader believed,
+  the card had told them the other. `saturation_stat` now prints the marginal gain
+  ("+20 EUR / per year from 15 kWh to 20 kWh"): the flattening-point's own savings would
+  merely be *consistent*, whereas the marginal gain **is** the flattening and is a number
+  no other element carries. A gain that rounds to zero is printed as the word "Nothing",
+  because "+0 EUR" in the card's second-largest text reads as a figure that failed to
+  compute rather than as the strongest form of the finding.
+- **The headline never spends its space on a repeat.** The single-capacity card read
+  "10 kWh pays back in 16.5 years" directly above "16.5 years / to pay back". Headline
+  space is the scarcest resource on an artifact that gets three seconds, so it goes to
+  what the stats cannot say: "10 kWh — the only size analysed", i.e. that no comparison
+  stands behind any number on the card. That caveat is invisible in a stat row and
+  changes how everything below it should be read.
+- **`bars_of()` in the tests reads bars off `axes.containers`, not `axes.patches`.**
+  A panel's patches include the clipped-bar break and its detached stub, so measuring
+  patches as bars silently corrupts any geometry assertion; `patches` is also typed as
+  `Patch`, which has neither `get_height` nor `get_width`, and mypy and Pyright disagree
+  about whether an ignore for that is warranted. One narrowing helper removes both
+  problems. A first attempt filtered on `get_label() == "_child0"` — matplotlib actually
+  labels them `_nolegend_`, so it returned an empty list and every assertion passed
+  vacuously. **A filter that silently matches nothing is how a green suite tests nothing.**
 - **`scripts/render_sample_cards.py` renders the fixture plus all four edge cases** into
   the git-ignored `scratchpad/cards/`, printing absolute paths. It exists because the
   card's layout defects are the class of bug the suite structurally cannot catch:
@@ -507,3 +613,95 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   to `scratchpad/cards/` with self-describing names and prints absolute paths.
   Confirmed by direct CLI runs that `--card` is on by default, `--no-card` suppresses it
   silently, and both artifact paths are named in the terminal.
+- **2026-08-11 (8)** — **Payback was never annualized.** Suite 203 → 213.
+
+  The card printed "199 EUR saved per year" beside "91.7 years to pay back" for a
+  3,000 EUR battery, where 3000/199 is 15.1. `payback_years()` divided cost by
+  *period* savings while the savings figure beside it was annualized, so on any file
+  shorter than a year payback was overstated by 365/days. The report and the terminal
+  shared the model and had it too; the export-price grid computed its own and had it
+  independently. Fixed in the domain layer — see the new "Annualization" section
+  above, which is the durable lesson and should be read before adding any derived
+  figure.
+
+  Two things about how it was found. It was **spotted by dividing two numbers printed
+  side by side on the card**, not by a test — the card put savings and payback next to
+  each other and made the contradiction arithmetic a reader could do in their head.
+  And it is the second uniform-error bug here, so the suite's shape is now the
+  documented risk, not just this instance.
+
+  Same review also corrected two overclaims in the card's own language (headline
+  wording, and dropping the payback panel when truncation inverts it) — rationale in
+  the Summary card section. Notable that both defects were *arguments the picture was
+  making*, not defects in what it computed: "5 kWh is enough" and three equal-looking
+  bars were each a true dataset rendered into a false claim. **Rendering is where a
+  correct number becomes a wrong statement, and the suite does not look there.**
+
+  All five cards regenerated to `scratchpad/cards/`; mutation-checked by reintroducing
+  the period-savings division (4 tests fail, including the period-invariance one).
+- **2026-08-11 (9)** — **Card polish: five defects, all in what the picture says rather
+  than in what it computes.** Suite 213 → 232, ruff and mypy strict clean. No engine
+  changes — `analysis.py`, `simulator.py` and `models.py` untouched. Rationale for each
+  is in the Summary card section above.
+
+  Mute bars, no headroom, losses in the savings colour, and two cards whose headline
+  argued with the figure directly beneath it (the flattening headline over the largest
+  battery's savings; a payback headline over the same payback restated as a stat).
+  Every one of them was a *correct number rendered into a misleading statement*, which
+  is the failure mode session (8) had just finished documenting — and none of the 213
+  existing tests could see any of them, for the same reason as before.
+
+  Two things worth carrying forward, both about the tests rather than the card.
+
+  *Symmetric assertions encode assumptions the design deliberately breaks.* The first
+  headroom test demanded clearance above **and** below every panel, which fails on an
+  all-positive panel — correctly, because item 3 had just removed exactly that padding
+  as dead space. The test was asserting the bug. Clearance belongs on the side that
+  carries the labels, and nowhere else.
+
+  *A filter that matches nothing turns a green test into no test.* `bars_of()` first
+  selected patches by `get_label() == "_child0"`; matplotlib labels them `_nolegend_`,
+  so it returned an empty list and every bar assertion passed vacuously. Caught by
+  printing the labels instead of trusting the guess. It now reads bars off
+  `axes.containers`, which is where `bar()` actually registers them.
+
+  All five cards regenerated and inspected individually: no unlabelled bar, nothing
+  touching an axis edge, and each headline consistent with the figure under it.
+  Mutation-checked on three independent reversions — re-muting the non-recommended
+  bars (2 fail), restoring the single savings hue (1 fail), and zeroing the headroom
+  (6 fail).
+
+  **Next: Milestone 3** — unchanged by this session. HA long-term statistics parser,
+  optional LLM layer, README with the real card screenshot, Dockerfile, launch posts.
+- **2026-08-11 (10)** — **`py.typed` was missing: the tests were never type-checked.**
+  Suite 232 → 233, and `mypy src tests scripts` is now clean where `mypy tests scripts`
+  reported 25 errors.
+
+  All 25 were one cause. PEP 561 requires a `py.typed` marker for a package's
+  annotations to be honoured by type checkers, and `src/battery_worth/` had none, so
+  every `from battery_worth... import` in the tests raised `import-untyped`. The error
+  count was the harmless half. **The damaging half was silent: mypy degraded every
+  imported symbol to `Any`**, so a strict-mode project's own test suite was effectively
+  unchecked — wrong argument types, wrong return types and misuse of the engine's API
+  from the tests would all have passed. Verified after the fix by probing that
+  `headline_for` now resolves as `list[ScenarioResult] -> str` and that passing a `str`
+  is rejected.
+
+  Worth recording as a pattern, because it is the same shape as sessions (5) and (8):
+  **the signal was visible and had been read as noise.** The 25 errors were dismissed as
+  "preexisting, unrelated to my changes" — true of their origin and irrelevant to their
+  cost. A checker that reports a wall of identical import errors is not a checker with
+  25 small problems; it is a checker that has stopped looking, and the thing it stops
+  looking at is everything downstream.
+
+  The marker is one empty file, ships in the wheel via the existing
+  `packages = ["src/battery_worth"]` (verified by building one and inspecting its
+  contents), and is pinned by a test — an empty file is exactly what a packaging
+  refactor deletes without anything failing. Mutation-checked both ways: removing it
+  fails the new test and restores all 25 mypy errors.
+
+  *Known and left alone, deliberately:* the `pydantic.mypy` plugin runs without
+  `init_typed`, so model constructors accept coercible-but-wrong argument types
+  (`BatterySpec(usable_capacity_kwh="grande")` type-checks). Preexisting, out of scope
+  for this fix, and worth a decision of its own — enabling it will surface real call
+  sites rather than being a no-op.

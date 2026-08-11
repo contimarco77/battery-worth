@@ -81,17 +81,24 @@ def simulate_battery(
     return out
 
 
-def summarize_scenario(
+def summarize_scenario(  # noqa: PLR0913, PLR0917 - one parameter per costing input
     sim_df: pd.DataFrame,
     spec: BatterySpec,
     import_prices: pd.Series,
     export_price: float,
     battery_cost_eur: float | None = None,
+    days_analyzed: int | None = None,
 ) -> ScenarioResult:
     """Compute the energy balance and economics for one simulated scenario.
 
     `import_prices` must be a per-interval EUR/kWh series aligned with sim_df's index
     (built by tariffs.py from the configured Tariff).
+
+    `days_analyzed` sizes the period so the scenario can annualize its own savings
+    and produce a payback in years. It defaults to counting the distinct days in
+    `sim_df` rather than requiring the caller to pass it: the frame already knows
+    how long it is, and a caller that forgets an argument would silently get a
+    payback overstated by 365/days.
 
     Cycle definition (stated explicitly, because cycle counts appear in warranty
     terms): `battery_cycles` is **equivalent full cycles**, defined as the total
@@ -120,9 +127,16 @@ def summarize_scenario(
     energy_stored = float(sim_df["battery_charge_kwh"].sum()) * spec.one_way_efficiency
     cycles = energy_stored / spec.usable_capacity_kwh
 
+    days = (
+        days_analyzed
+        if days_analyzed is not None
+        else max(1, int(pd.DatetimeIndex(sim_df.index).normalize().nunique()))
+    )
+
     return ScenarioResult(
         capacity_kwh=spec.usable_capacity_kwh,
         battery_cost_eur=battery_cost_eur,
+        days_analyzed=days,
         total_consumption_kwh=consumption,
         total_pv_kwh=total_pv,
         baseline_import_kwh=baseline_import,

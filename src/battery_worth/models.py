@@ -11,6 +11,26 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, model_validator
 
+# 365, not the 365.25 of a mean Julian year. On a dataset of exactly one year the
+# Julian constant scales every figure by 0.07% — a correction that buys nothing and
+# breaks the one property this tool sells: that a user who sums their own CSV in a
+# spreadsheet finds the report's number. With 365, a full year is the identity.
+#
+# It lives here, in the domain layer, rather than in `report.py`, because
+# annualization is not a formatting concern: `payback_years()` needs it to produce a
+# correct number at all, and a presentation module cannot be a dependency of the
+# model it presents.
+DAYS_PER_YEAR = 365.0
+
+
+def annualization_years(days: int) -> float:
+    """The divisor that turns a whole-period total into a per-year figure.
+
+    Exactly 365 days returns exactly 1.0, so on a full year every annualized figure
+    equals the sum of the user's own input column.
+    """
+    return max(days / DAYS_PER_YEAR, 1e-9)
+
 
 class ColumnMapping(BaseModel):
     """Maps user CSV columns to the source energy series (kWh per interval).
@@ -147,6 +167,12 @@ class ScenarioResult(BaseModel):
     capacity_kwh: float
     battery_cost_eur: float | None = None
 
+    # How long the analyzed period is. Carried on the scenario itself, not left to
+    # the caller, because `payback_years()` cannot be correct without it: every
+    # other figure here is a period total, and dividing a cost by a *period* saving
+    # yields years-of-that-period, not years. See the docstring below.
+    days_analyzed: int = Field(default=365, gt=0)
+
     # Energy balance (kWh, over the analyzed period)
     total_consumption_kwh: float
     total_pv_kwh: float
@@ -166,14 +192,40 @@ class ScenarioResult(BaseModel):
 
     @property
     def savings_eur(self) -> float:
+        """Savings over the analyzed period, whatever its length."""
         return self.baseline_cost_eur - self.simulated_cost_eur
 
+    @property
+    def annual_savings_eur(self) -> float:
+        """Savings scaled to a full year — the figure every consumer should show.
+
+        Exposed on the model rather than recomputed per call site: the card, the
+        report and the terminal all need it, and three copies of one division is
+        how they end up disagreeing.
+        """
+        return self.savings_eur / annualization_years(self.days_analyzed)
+
     def payback_years(self) -> float | None:
-        """Naive payback: cost / year-1 savings. Ignores degradation and inflation
-        (stated explicitly in the report's Limits & assumptions section)."""
-        if self.battery_cost_eur is None or self.savings_eur <= 0:
+        """Naive payback: cost / **annual** savings. Years, not periods.
+
+        The division is against `annual_savings_eur`, and the distinction is a
+        correctness one rather than a stylistic one. `savings_eur` is a total over
+        whatever period was analyzed, so dividing a cost by it yields "how many of
+        *these periods* until it pays back" — which equals years only when the
+        period happens to be a year. On a 60-day file it overstated payback by
+        365/60, i.e. 6x: a 3,000 EUR battery saving 199 EUR/year was reported as
+        91.7 years rather than 15.1, printed directly beside the annualized savings
+        figure that contradicted it.
+
+        The bug was invisible on the project's own fixture because it is exactly
+        365 days long, where the factor is 1.
+
+        Ignores degradation and price inflation, both stated in the report's
+        "Limits & assumptions" section.
+        """
+        if self.battery_cost_eur is None or self.annual_savings_eur <= 0:
             return None
-        return self.battery_cost_eur / self.savings_eur
+        return self.battery_cost_eur / self.annual_savings_eur
 
 
 class ExportPricePoint(BaseModel):

@@ -25,18 +25,23 @@ from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescap
 
 from battery_worth import PROJECT_NAME, REPO_URL
 from battery_worth.analysis import recommended_scenario
-from battery_worth.models import AnalysisResult, ScenarioResult, Tariff, TariffKind
+from battery_worth.models import (
+    AnalysisResult,
+    ScenarioResult,
+    Tariff,
+    TariffKind,
+    annualization_years,
+)
+
+# Re-exported, not redefined. It used to be defined here, which was wrong in a way
+# that mattered: `payback_years()` needs annualization to be *correct*, not merely
+# formatted, so the rule belongs to the domain model. Kept importable from this
+# module because the CLI and the tests already reach for it here.
+__all__ = ["annualization_years", "describe_tariff", "render_report", "write_report"]
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-# 365, not the 365.25 of a mean Julian year. On a dataset of exactly one year the
-# Julian constant scales every headline figure by 365.25/365 — a 0.07% correction
-# that buys nothing and breaks the one property this tool sells: that its numbers
-# are the user's own. Someone who sums their CSV in a spreadsheet must find the
-# report's total, not a number 0.07% away from it with no way to explain the gap.
-# With 365, a full year is the identity.
-_DAYS_PER_YEAR = 365.0
 _TEMPLATE_NAME = "report.md.j2"
 
 # Below this, a season's savings are too small for its share of the year to be
@@ -164,19 +169,6 @@ def _filter_years(value: float | None) -> str:
 
 def _filter_round0(value: float) -> str:
     return f"{value:,.0f}"
-
-
-def annualization_years(days: int) -> float:
-    """The divisor that turns a whole-period total into a per-year figure.
-
-    Public because the terminal output annualizes the same scenarios: if the CLI
-    and the report ever used different rules, the same run would print two
-    different annual savings figures depending on where you read it.
-
-    Exactly 365 days returns exactly 1.0, so every headline energy figure on a
-    full year equals the sum of the user's own input column.
-    """
-    return max(days / _DAYS_PER_YEAR, 1e-9)
 
 
 def _largest_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult:

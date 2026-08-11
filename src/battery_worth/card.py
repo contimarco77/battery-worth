@@ -7,11 +7,17 @@ has about three seconds.
 
 Three consequences run through everything below.
 
-**The headline is the capacity, not the payback.** "5 kWh is enough for this
-house" is actionable and contradicts what a salesperson told the reader; "14.2
-years" alone is just discouraging and gets scrolled past. Savings and payback are
-a subordinate pair directly under it, because they are what makes the headline
-credible, not what makes it interesting.
+**The headline is the capacity, not the payback** — but only ever as a claim the
+numbers underneath can defend. "5 kWh pays back fastest" is actionable and often
+contradicts the quote in the reader's inbox; "14.2 years" alone is just
+discouraging and gets scrolled past. What it must *not* do is upgrade an
+investment finding into a sufficiency one: 5 kWh paying back fastest says nothing
+about 5 kWh being *enough*, and on the fixture it plainly is not (59%
+self-consumption against 98% at 20 kWh). `headline_for` carries one sentence per
+case, and where the data supports no recommendation — no battery cost, so no
+payback, so nothing but "biggest saves most" — it recommends nothing and reports
+the saturation instead. Savings and payback sit under it as a subordinate pair:
+they make the headline checkable, not interesting.
 
 **The chart carries the whole argument of the tool in one glance:** the biggest
 battery saves the most money and is the worst investment. Those are two measures
@@ -59,7 +65,7 @@ from matplotlib.ticker import FuncFormatter
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL
 from battery_worth.analysis import recommended_scenario
-from battery_worth.report import annualization_years, describe_tariff
+from battery_worth.report import describe_tariff
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,6 +95,11 @@ _GRID = "#e1e0d9"
 _RULE = "#c3c2b7"
 _SAVINGS = "#2a78d6"  # blue: the money series
 _PAYBACK = "#eb6834"  # orange: the cost-of-getting-it-back series
+# Money lost, in the savings panel only. Desaturated on purpose: it has to read as
+# the *negative* of the savings hue at a glance without becoming the loudest thing
+# on a card whose headline is already saying the battery lost money. A saturated
+# red would out-shout the verdict it is illustrating.
+_LOSS = "#c0503f"
 _WARNING_BG = "#fdf1e7"
 _WARNING_INK = "#8a3d12"
 
@@ -139,13 +150,25 @@ _SIZE_WARNING = 14
 _SIZE_FOOTER = 13
 _SIZE_BRAND = 15
 
-# Paybacks longer than this are drawn clipped, with the true value labelled. A
-# single 300-year bar would flatten every other bar into the baseline and hide
-# the shape that is the whole point of the panel.
+# The horizon a payback has to fall inside to be worth plotting at all. 20 years
+# is the usual end of a home-battery warranty (most are 10 years or a throughput
+# figure; 20 is generous to the battery), so a payback beyond it is not a slow
+# return — it is a return the hardware is not expected to survive to deliver.
+# Past this, bars stop being the right encoding: see `_draw_no_payback_panel`.
+_BATTERY_LIFETIME_YEARS = 20.0
+
+# Within the horizon, a single outlier can still crowd the panel. This caps the
+# axis so the shorter bars stay comparable, with the true value labelled.
 _PAYBACK_AXIS_CAP_YEARS = 40.0
 # Only clip when something is actually off the scale by a margin; clipping a
 # 41-year bar to 40 would misrepresent it for no legibility gain.
 _PAYBACK_CLIP_TRIGGER = 1.25
+
+# A capacity counts as the saturation knee once it reaches this share of the best
+# savings in the sweep: past it, more kWh buy a rounding error.
+_SATURATION_FRACTION = 0.90
+# Below three points there is no curve to find a knee on — two points are a line.
+_MIN_POINTS_FOR_KNEE = 3
 
 # Space between consecutive bands of the card (stats -> warning -> chart).
 _BAND_GAP = 0.030
@@ -158,9 +181,19 @@ _PANEL_TITLE_SPACE = 0.048
 # Below this much vertical room the chart is dropped rather than squeezed: a panel
 # thinner than its own axis labels is worse than the white space it replaces.
 _MIN_CHART_HEIGHT = 0.10
+# Vertical band reserved for the sentence that replaces the payback panel: its
+# own heading, the sentence, and air around both.
+_STATEMENT_BAND = 0.115
 # The panel is laid out for at least this many capacity slots, so a one- or
 # two-capacity sweep produces narrow bars in a wide panel rather than slabs.
 _MIN_SLOTS = 4
+
+# Fractions of the data span added beyond the extreme bars. `_LABEL_HEADROOM` goes
+# on whichever side carries the direct labels and has to fit a line of text plus
+# its offset; `_EDGE_MARGIN` is the bare clearance that keeps a bar from ending on
+# the frame, where it reads as clipped rather than as finished.
+_LABEL_HEADROOM = 0.15
+_EDGE_MARGIN = 0.04
 
 _BRAND = PROJECT_NAME
 _REPO_URL = REPO_DISPLAY_URL
@@ -214,15 +247,14 @@ def _build(
     # to measure text against, which a bare Figure does not have.
     FigureCanvasAgg(figure)
 
-    years = annualization_years(result.days_analyzed)
     best = recommended_scenario(result.scenarios)
     battery_scenarios = [s for s in result.scenarios if s.capacity_kwh > 0]
 
     cursor = 1.0 - _MARGIN
-    cursor = _draw_headline(figure, best, cursor)
-    cursor = _draw_stats(figure, best, years, cursor)
+    cursor = _draw_headline(figure, result.scenarios, cursor)
+    cursor = _draw_stats(figure, best, battery_scenarios, cursor)
     cursor = _draw_warning(figure, result, cursor)
-    _draw_chart(figure, battery_scenarios, years, cursor)
+    _draw_chart(figure, battery_scenarios, cursor)
     _draw_footer(figure, result, tariff, repo_url)
     return figure
 
@@ -230,21 +262,137 @@ def _build(
 # --- Headline ----------------------------------------------------------------
 
 
-def _draw_headline(figure: Figure, best: ScenarioResult | None, top: float) -> float:
-    """The verdict, as the largest thing on the card.
+def headline_for(scenarios: list[ScenarioResult]) -> str:
+    """The verdict sentence. Every word of it must be defensible from the card.
 
-    Phrased as a capacity claim ("5 kWh is enough for this house") because that is
-    the sentence a reader can act on and, often, the sentence that contradicts the
-    quote in their inbox. When nothing in the sweep saved money, the headline says
-    so plainly rather than promoting the least-bad option — an honest negative
-    result is still a result, and dressing it up would be the one failure this
-    tool cannot afford.
+    The rule this function exists to enforce: **say what the number means, not the
+    strongest thing it could be made to imply.** An earlier version read
+    "5 kWh is enough for this house" in every case, which was three separate
+    overclaims:
+
+    - *Sufficiency it had not measured.* On the fixture, 5 kWh gives 59%
+      self-consumption and 20 kWh gives 98%. 5 kWh is the best **investment**, not
+      "enough" — those are different claims and the card was making the stronger
+      one, against its own chart.
+    - *A recommendation with no basis.* With no battery cost there is no payback,
+      so `recommended_scenario` falls back to the largest absolute savings — which
+      recommends the biggest battery, precisely the trap this tool exists to
+      expose. The honest answer is to recommend no size at all and report the
+      saturation the chart already shows.
+    - *A superlative over a single data point.* One capacity in the sweep makes
+      "best" meaningless; there is nothing for it to be best against.
+
+    Each case therefore gets its own sentence, and none of them claims more than
+    the panels underneath can support.
     """
+    batteries = [s for s in scenarios if s.capacity_kwh > 0]
+    if not batteries:
+        return "No battery was worth it here"
+
+    earning = [s for s in batteries if s.annual_savings_eur > 0]
+    if not earning:
+        return "No battery paid off here"
+
+    with_payback = [s for s in batteries if s.payback_years() is not None]
+
+    # No cost supplied: no payback exists, so no size can be recommended. What the
+    # data *does* show is where extra capacity stops buying anything, which is the
+    # useful half of the answer and is visible in the panel below.
+    if not with_payback:
+        knee = _saturation_knee(earning)
+        if knee is not None:
+            return f"Savings flatten beyond {_capacity_label(knee)}"
+        return f"Up to {_earning_max(earning):,.0f} EUR/year in savings"
+
+    # A single capacity supports no superlative — there is nothing to be best
+    # against — and the headline says exactly that, which is the one thing about
+    # this card the stats row cannot.
+    #
+    # It used to read "10 kWh pays back in 16.5 years", which spent the card's
+    # largest text on a number printed again, verbatim, two centimetres below it as
+    # "16.5 years / to pay back". Headline space is the scarcest resource here: the
+    # reader gives the card three seconds and the top line gets most of them, so a
+    # repeat costs the only slot available for something the reader would not
+    # otherwise learn. What they would not otherwise learn is that there is no
+    # comparison behind this number — one size was analysed, so nothing on the card
+    # says whether a different one would have done better. That caveat is invisible
+    # in a stat row and changes how every figure below it should be read.
+    if len(with_payback) == 1:
+        only = with_payback[0]
+        return f"{_capacity_label(only.capacity_kwh)} — the only size analysed"
+
+    fastest = min(with_payback, key=lambda s: s.payback_years() or 0.0)
+    return f"{_capacity_label(fastest.capacity_kwh)} pays back fastest"
+
+
+def _earning_max(earning: list[ScenarioResult]) -> float:
+    return max(s.annual_savings_eur for s in earning)
+
+
+def _saturation_knee(earning: list[ScenarioResult]) -> float | None:
+    """The capacity past which extra kWh stop buying meaningful savings.
+
+    Defined as the smallest capacity already within `_SATURATION_FRACTION` of the
+    best savings in the sweep — i.e. the point where the curve has flattened. It is
+    only claimed when a *larger* capacity was actually simulated, because "savings
+    flatten beyond X" is a statement about what lies past X: asserting it from the
+    last point in the sweep would be extrapolating off the end of the data, which
+    is the same overclaim in a different costume.
+    """
+    if len(earning) < _MIN_POINTS_FOR_KNEE:
+        return None
+    ranked = sorted(earning, key=lambda s: s.capacity_kwh)
+    ceiling = max(s.annual_savings_eur for s in ranked)
+    if ceiling <= 0:
+        return None
+    for scenario in ranked[:-1]:
+        if scenario.annual_savings_eur >= ceiling * _SATURATION_FRACTION:
+            return scenario.capacity_kwh
+    return None
+
+
+def saturation_stat(scenarios: list[ScenarioResult]) -> tuple[str, str] | None:
+    """The stat that backs "savings flatten beyond X" — the marginal gain past X.
+
+    Exists because the headline and the figure under it were arguing with each
+    other. With no cost supplied the headline says savings flatten beyond 15 kWh
+    and the stat row printed 462 EUR: the 20 kWh figure, i.e. the *largest* value
+    in the sweep, sitting directly beneath a sentence implicitly advising against
+    buying that size. Whichever of the two the reader believed, the card had told
+    them the other.
+
+    The marginal gain is the stronger repair of the two available. The flattening
+    point's own savings (442 EUR) would at least be consistent, but it is only
+    another absolute figure and leaves the reader to find the difference that makes
+    the headline true. "+20 EUR/year" *is* the flattening — it states the size of
+    what the extra 5 kWh buys, which is the finding, and it is a number no other
+    part of the card carries.
+
+    Returns `(value, label)` for the stat row, or `None` when there is no knee to
+    describe — in which case the caller keeps the plain savings figure.
+    """
+    earning = [s for s in scenarios if s.annual_savings_eur > 0]
+    knee = _saturation_knee(earning)
+    if knee is None:
+        return None
+    ranked = sorted(earning, key=lambda s: s.capacity_kwh)
+    at_knee = next(s for s in ranked if s.capacity_kwh == knee)
+    largest = ranked[-1]
+    gain = largest.annual_savings_eur - at_knee.annual_savings_eur
+    span = f"from {_capacity_label(knee)} to {_capacity_label(largest.capacity_kwh)}"
+    # A gain that rounds to nothing is the strongest possible version of the
+    # headline, and "+0 EUR" is the weakest possible way to print it: a zero in the
+    # card's second-largest text reads as a figure that failed to compute, not as a
+    # finding. Saturation gets said in words when the number has nothing left to say.
+    if round(gain) == 0:
+        return ("Nothing", f"more saved per year {span}")
+    return (f"+{gain:,.0f} EUR", f"per year {span}")
+
+
+def _draw_headline(figure: Figure, scenarios: list[ScenarioResult], top: float) -> float:
+    """Draw the verdict, as the largest thing on the card."""
     kicker = "Would a home battery have paid off?"
-    if best is None or best.capacity_kwh <= 0:
-        headline = "No battery paid off here"
-    else:
-        headline = f"{_capacity_label(best.capacity_kwh)} is enough for this house"
+    headline = headline_for(scenarios)
 
     figure.text(
         _MARGIN, top, kicker,
@@ -309,7 +457,10 @@ def _capacity_label(capacity_kwh: float) -> str:
 
 
 def _draw_stats(
-    figure: Figure, best: ScenarioResult | None, years: float, top: float
+    figure: Figure,
+    best: ScenarioResult | None,
+    scenarios: list[ScenarioResult],
+    top: float,
 ) -> float:
     """Savings per year and payback, as a pair, under the headline.
 
@@ -317,6 +468,13 @@ def _draw_stats(
     being it. Payback renders as "never" when there are no positive savings and
     is omitted entirely when no battery cost was supplied — an absent input must
     read as absent, never as a zero or a blank the reader can misinterpret.
+
+    **The first stat must support the headline, never undercut it.** This row sits
+    two centimetres below the largest text on the card, so the reader takes the two
+    as one statement; a figure that argues with the sentence above it does more
+    damage than no figure at all. That is why the whole scenario list is passed in
+    and not only `best`: in the no-cost case the headline is about *flattening*,
+    which is a property of the curve, and no single scenario can express it.
     """
     if best is None:
         figure.text(
@@ -328,9 +486,21 @@ def _draw_stats(
         return top - 0.075
 
     payback = best.payback_years()
-    stats: list[tuple[str, str]] = [
-        (f"{best.savings_eur / years:,.0f} EUR", "saved per year"),
-    ]
+    # Without a cost the headline recommends no size and reports the saturation
+    # instead, so the lead stat follows it there: the marginal gain past the knee,
+    # which is what "flatten" means in numbers. Where there is no knee to describe,
+    # the headline is back to a plain savings figure and so is this — labelled with
+    # the capacity that achieved it, rather than letting a bare number imply a size
+    # the card declined to name.
+    saturation = None if best.battery_cost_eur is not None else saturation_stat(scenarios)
+    if saturation is not None:
+        stats: list[tuple[str, str]] = [saturation]
+    else:
+        savings_label = (
+            "saved per year" if best.battery_cost_eur is not None
+            else f"saved per year at {_capacity_label(best.capacity_kwh)}"
+        )
+        stats = [(f"{best.annual_savings_eur:,.0f} EUR", savings_label)]
     if best.battery_cost_eur is not None:
         stats.append((_payback_label(payback), "to pay back"))
         stats.append((f"{best.battery_cost_eur:,.0f} EUR", "battery cost"))
@@ -400,7 +570,7 @@ def _draw_warning(figure: Figure, result: AnalysisResult, top: float) -> float:
 
 
 def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coordinates named
-    figure: Figure, scenarios: list[ScenarioResult], years: float, cursor: float
+    figure: Figure, scenarios: list[ScenarioResult], cursor: float
 ) -> None:
     """Savings and payback against capacity, as two panels on one shared x-axis.
 
@@ -425,27 +595,97 @@ def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coord
     if not scenarios or available <= _MIN_CHART_HEIGHT:
         return
 
-    # The payback panel earns its space only when there is a payback to draw.
-    # Without a battery cost there is nothing to compute; with a cost but no
-    # positive savings anywhere, every bar is absent and the panel is a title over
-    # a row of "never" — which the headline has already said, louder. Either way
-    # the savings panel takes the full height instead of sharing it with an empty
-    # one.
-    has_payback = any(s.payback_years() is not None for s in scenarios)
+    paybacks = [p for s in scenarios if (p := s.payback_years()) is not None]
+    # Three states, not two. A bar panel is only the right encoding for the first.
+    #
+    # - Something pays back inside a battery's working life: draw the bars.
+    # - Paybacks exist but all lie beyond that horizon: draw a *sentence*. Bars
+    #   here would have to be truncated so hard that the encoding inverts — on the
+    #   60-day card, 91.7 / 126.6 / 181.0 years rendered as three near-identical
+    #   stubs, implying the paybacks were similar when the longest was double the
+    #   shortest. A chart that misstates its own values is worse than no chart.
+    # - No payback at all (no cost, or no positive savings): nothing to say that
+    #   the headline has not already said, so the savings panel takes the height.
+    within_lifetime = [p for p in paybacks if p <= _BATTERY_LIFETIME_YEARS]
+    mode = "bars" if within_lifetime else ("sentence" if paybacks else "none")
 
     # Between the panels: the lower panel's own title, plus a breathing gap.
-    gap = _PANEL_TITLE_SPACE + 0.022 if has_payback else 0.0
-    panels = 2 if has_payback else 1
-    panel_height = (available - gap) / panels
+    gap = _PANEL_TITLE_SPACE + 0.022 if mode == "bars" else 0.0
+    panels = 2 if mode == "bars" else 1
+    # The replacement sentence is not free space: it needs a band of its own below
+    # the savings panel, or it is drawn over the bars.
+    reserved = _STATEMENT_BAND if mode == "sentence" else 0.0
+    panel_height = (available - gap - reserved) / panels
 
     savings_axes = figure.add_axes((
         _PLOT_LEFT, top - panel_height, _PLOT_WIDTH, panel_height
     ))
-    _draw_savings_panel(savings_axes, scenarios, years, label_x=not has_payback)
+    _draw_savings_panel(savings_axes, scenarios, label_x=mode != "bars")
 
-    if has_payback:
+    if mode == "bars":
         payback_axes = figure.add_axes((_PLOT_LEFT, bottom, _PLOT_WIDTH, panel_height))
         _draw_payback_panel(payback_axes, scenarios)
+    elif mode == "sentence":
+        # The savings panel now ends `_STATEMENT_BAND` higher; the sentence fills
+        # that band, starting below the panel's own x-axis labels and title.
+        _draw_no_payback_statement(
+            figure, scenarios, band_top=top - panel_height - _PANEL_TITLE_SPACE
+        )
+
+
+def _emphasized_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult | None:
+    """Which bar is drawn at full strength — or none, when nothing is recommended.
+
+    Emphasis is a recommendation made in ink, so it has to obey the same rule the
+    headline does. `recommended_scenario` falls back to the largest absolute
+    savings when no payback exists, which would light up the biggest battery in the
+    sweep directly under a headline that has just declined to recommend a size —
+    the picture contradicting the sentence, and picking the louder of the two.
+    With no payback anywhere, no bar is emphasized.
+    """
+    if not any(s.payback_years() is not None for s in scenarios):
+        return None
+    return recommended_scenario(scenarios)
+
+
+def no_payback_statement(scenarios: list[ScenarioResult]) -> str | None:
+    """The sentence that replaces the payback panel when nothing pays back in time.
+
+    Names the shortest payback and the capacity that achieves it, so the reader
+    gets the actual figure rather than only the verdict — "no capacity pays back"
+    without a number invites the suspicion that the tool simply failed to compute
+    one.
+    """
+    priced = [(p, s) for s in scenarios if (p := s.payback_years()) is not None]
+    if not priced:
+        return None
+    payback, scenario = min(priced, key=lambda pair: pair[0])
+    return (
+        f"No capacity pays back within {_BATTERY_LIFETIME_YEARS:.0f} years — "
+        f"shortest is {payback:.1f} y at {_capacity_label(scenario.capacity_kwh)}"
+    )
+
+
+def _draw_no_payback_statement(
+    figure: Figure, scenarios: list[ScenarioResult], band_top: float
+) -> None:
+    """Render the replacement sentence where the payback panel would have been."""
+    statement = no_payback_statement(scenarios)
+    if statement is None:
+        return
+
+    # Anchored to the top of its reserved band and drawn downwards, so the heading
+    # sits clear of the savings panel's x-axis labels above it.
+    figure.text(
+        _MARGIN, band_top, "Years to pay back",
+        fontfamily=_FONT, fontsize=_SIZE_CHART_TITLE, fontweight="bold",
+        color=_INK_SECONDARY, va="top", ha="left",
+    )
+    figure.text(
+        _MARGIN, band_top - 0.038, statement,
+        fontfamily=_FONT, fontsize=_SIZE_STAT_LABEL + 2, color=_INK,
+        va="top", ha="left",
+    )
 
 
 def _style_panel(axes: Axes, title: str) -> None:
@@ -480,24 +720,44 @@ def _style_panel(axes: Axes, title: str) -> None:
 
 
 def _draw_savings_panel(
-    axes: Axes, scenarios: list[ScenarioResult], years: float, label_x: bool
+    axes: Axes, scenarios: list[ScenarioResult], label_x: bool
 ) -> None:
     """Upper panel: annual savings per capacity. Taller is better, and it saturates."""
     _style_panel(axes, "Savings per year")
 
-    values = [s.savings_eur / years for s in scenarios]
+    values = [s.annual_savings_eur for s in scenarios]
     positions = list(range(len(scenarios)))
-    best = recommended_scenario(scenarios)
+    best = _emphasized_scenario(scenarios)
 
     # One hue for the whole series, emphasis by opacity: the recommended bar at
     # full strength, the rest receded. Eight categorical hues for what is a single
     # measure would be the most common way a chart misses its own point.
+    #
+    # The one thing colour *does* encode here is the sign, because that is not a
+    # category — it is the threshold the whole card is about. Drawing a bar that
+    # loses 1,254 EUR in the same blue as one that earns 462 makes the reader take
+    # the direction from the axis alone, and the axis is the slowest thing on the
+    # panel to read. Below zero the bars turn red; the emphasis rule is unchanged.
     bars = axes.bar(
         positions, values, width=_bar_width(len(scenarios)),
-        color=_SAVINGS, edgecolor="none",
+        color=[_LOSS if v < 0 else _SAVINGS for v in values], edgecolor="none",
     )
+    # With nothing recommended there is no bar for the others to recede *behind*,
+    # and the right answer differs by case rather than being one rule.
+    #
+    # Losing: the bars *are* the finding. Held at 0.32 the whole panel is a row of
+    # ghosts, and pale red reads as tentative about a result the headline states
+    # outright, so every bar goes to full strength.
+    #
+    # Saturating (no cost supplied): the finding is the *shape* of the curve, not
+    # any one bar. Four bars at full strength shout without saying more than four
+    # receded ones, and the panel stops being the quiet evidence under a headline
+    # and starts competing with it. The series stays receded.
+    losing = any(v < 0 for v in values)
     for bar, scenario in zip(bars, scenarios, strict=True):
-        emphasized = best is not None and scenario.capacity_kwh == best.capacity_kwh
+        emphasized = (
+            losing if best is None else scenario.capacity_kwh == best.capacity_kwh
+        )
         bar.set_alpha(1.0 if emphasized else 0.32)
 
     axes.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
@@ -506,14 +766,16 @@ def _draw_savings_panel(
     )
     _set_capacity_ticks(axes, scenarios, visible=label_x)
 
-    # Direct-label the recommended bar; a number on every bar is noise and the
-    # axis carries the rest. With nothing recommended — every capacity losing
-    # money — every bar is labelled instead, because then the losses *are* the
-    # finding and burying them behind an axis would soften it.
+    # **Every bar carries its number.** Labelling only the recommended one left
+    # the rest mute: the reader could see that the 20 kWh bar was taller but had
+    # to walk each one back to a gridline to find out by how much, which is the
+    # arithmetic the card exists to have already done. The chart's whole argument
+    # is the *gaps* between the capacities — +79 EUR from 10 to 15, +20 from 15 to
+    # 20 — and a gap cannot be read off two bars when neither states its value.
+    # Emphasis then does the job it was always meant to do: rank the labels rather
+    # than be the only one, so the recommendation still reads first.
     for position, value, scenario in zip(positions, values, scenarios, strict=True):
         emphasized = best is not None and scenario.capacity_kwh == best.capacity_kwh
-        if best is not None and not emphasized:
-            continue
         below = value < 0
         axes.annotate(
             f"{value:,.0f} EUR",
@@ -525,7 +787,7 @@ def _draw_savings_panel(
             color=_INK if emphasized else _INK_SECONDARY,
         )
 
-    _pad_top(axes, values, headroom=0.28)
+    _pad_range(axes, values)
     _draw_zero_line(axes, values)
 
 
@@ -567,15 +829,18 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
     )
     _set_capacity_ticks(axes, scenarios, visible=True)
 
+    # Every bar states its own figure, for the same reason as the savings panel:
+    # the comparison here is between paybacks, and a bar the reader has to measure
+    # against a gridline is a number the card declined to print. Clipped bars had
+    # to be labelled anyway — their height is a lie without the text — so this
+    # makes the rule uniform instead of "labelled when the bar cannot be trusted".
     for position, payback, scenario in zip(positions, paybacks, scenarios, strict=True):
         emphasized = best is not None and scenario.capacity_kwh == best.capacity_kwh
         clipped = payback is not None and payback > cap
         if payback is None:
             text, y = "never", 0.0
-        elif emphasized or clipped:
-            text, y = f"{payback:.1f}", min(payback, cap)
         else:
-            continue
+            text, y = f"{payback:.1f}", min(payback, cap)
         axes.annotate(
             text,
             # Clipped bars carry a stub above the cap; the label clears it.
@@ -586,7 +851,9 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
             color=_INK if emphasized else _INK_SECONDARY,
         )
 
-    _pad_top(axes, drawn, headroom=0.28)
+    # Against `drawn`, not `paybacks`: the clipped heights are what the axis has to
+    # contain. Padding to a 300-year true value would collapse the panel to a strip.
+    _pad_range(axes, drawn)
 
 
 def _draw_zero_line(axes: Axes, values: list[float]) -> None:
@@ -705,23 +972,34 @@ def _set_capacity_ticks(
     )
 
 
-def _pad_top(axes: Axes, values: list[float], headroom: float) -> None:
-    """Set the y-range with room above the tallest bar for its direct label.
+def _pad_range(axes: Axes, values: list[float]) -> None:
+    """Set the y-range so every bar clears the axis edges and every label fits.
 
-    Two things to get right, and the second is an honesty requirement rather than
-    a cosmetic one.
+    Three things to get right, and only the first is cosmetic.
 
-    Headroom: without it the annotation on the tallest bar is drawn outside the
-    axes and clipped — the label survives on every bar except the one that matters
-    most.
+    **Headroom on the side the labels are on.** Now that every bar is labelled and
+    not just the recommended one, the tallest bar's label is no longer a special
+    case — it is the ordinary case, and without room above it the number is drawn
+    outside the axes and clipped. Just as bad without any clipping: a bar whose top
+    lands on the frame reads as *truncated*, as though the panel could not contain
+    its own value. `_LABEL_HEADROOM` is the room for the label, deliberately larger
+    than `_EDGE_MARGIN`, which is only the visual breathing room a bar with nothing
+    written past it needs.
 
-    **Negative values must be visible as negative.** Savings go below zero under a
-    feed-in tariff more generous than the import price, which is a real and
-    increasingly common case, and it is exactly the result this tool exists to be
-    willing to report. Anchoring the axis at zero would draw those bars as nothing
-    at all — an empty panel reading as "no data" beside a headline that says the
-    battery lost money. So the range follows the data in both directions, and the
-    zero line stays inside it.
+    **The padding follows the labels, not the axis.** Labels sit above positive
+    bars and below negative ones, so a panel with no negative bar gets no room
+    below zero and a panel with no positive bar gets none above it. That is what
+    removes the dead band the losing card used to draw: its axis ran to +200 with
+    nothing in it, a fifth of the panel spent on the region where the finding
+    *isn't*, which flattened the losses it was supposed to show.
+
+    **Negative values must stay visible as negative.** Savings go below zero under
+    a feed-in tariff more generous than the import price — real, increasingly
+    common, and exactly the result this tool exists to be willing to report.
+    Anchoring the axis at zero would draw those bars as nothing at all: an empty
+    panel reading as "no data" beside a headline saying the battery lost money. So
+    zero is always *inside* the range, and the range follows the data in whichever
+    directions the data actually goes.
     """
     tallest = max([*values, 0.0])
     lowest = min([*values, 0.0])
@@ -729,7 +1007,12 @@ def _pad_top(axes: Axes, values: list[float], headroom: float) -> None:
     if span <= 0:
         axes.set_ylim(0.0, 1.0)
         return
-    axes.set_ylim(lowest - span * 0.08, tallest + span * headroom)
+    # Zero is an endpoint whenever no bar crosses it, and it gets the small edge
+    # margin rather than the label allowance: nothing is ever written past zero on
+    # the empty side.
+    top = tallest + span * (_LABEL_HEADROOM if tallest > 0 else _EDGE_MARGIN)
+    bottom = lowest - span * (_LABEL_HEADROOM if lowest < 0 else _EDGE_MARGIN)
+    axes.set_ylim(bottom, top)
 
 
 # --- Footer ------------------------------------------------------------------

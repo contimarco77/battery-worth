@@ -23,12 +23,21 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from matplotlib.axes import Axes
+from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL, REPO_URL
 from battery_worth.analysis import run_analysis
-from battery_worth.card import CARD_PX, build_summary_card, render_summary_card
+from battery_worth.card import (
+    CARD_PX,
+    build_summary_card,
+    headline_for,
+    no_payback_statement,
+    render_summary_card,
+)
 from battery_worth.models import AnalysisResult, Tariff, TariffKind
 from battery_worth.report import annualization_years, describe_tariff, render_report
 from tests.test_analysis import FLAT_TARIFF, TEMPLATE, make_report, make_solar_days
@@ -41,13 +50,26 @@ LOSING_TARIFF = Tariff(
 )
 
 
+# 150 EUR/kWh on this synthetic household puts paybacks in the 12-13 year range —
+# inside a plausible battery lifetime, so the default `build()` exercises the
+# normal two-panel card. It is deliberately far below a real installed price: the
+# synthetic day is small, and the point is to land the *payback* in a realistic
+# band, not the price. Tests about long paybacks raise it explicitly.
+DEFAULT_COST_PER_KWH = 150.0
+
+
 def build(
     capacities: list[float] | None = None,
-    cost_per_kwh: float | None = 600.0,
+    cost_per_kwh: float | None = DEFAULT_COST_PER_KWH,
     days: int = 365,
     tariff: Tariff = FLAT_TARIFF,
 ) -> AnalysisResult:
-    """A sweep over the synthetic solar days, parameterized for the edge cases."""
+    """A sweep over the synthetic solar days, parameterized for the edge cases.
+
+    The frame is always 60 repeating days; `days` sets the period the analysis is
+    *told* it covers, which is what annualization keys off. That split is what lets
+    the period-length tests vary one without the other.
+    """
     return run_analysis(
         make_solar_days(n_days=min(days, 60)),
         make_report(days=days),
@@ -103,25 +125,96 @@ def test_creates_missing_parent_directories(tmp_path: Path) -> None:
 # --- Hierarchy: the capacity is the headline ---------------------------------
 
 
-def test_headline_is_the_recommended_capacity_not_the_payback() -> None:
-    """The largest element on the card is a capacity claim, and it is actionable.
+def test_headline_names_the_fastest_payback_as_an_investment_claim() -> None:
+    """The verdict is about the best *investment*, and says only that.
 
-    "5 kWh is enough for this house" contradicts a salesperson; "14.2 years" only
-    discourages. This asserts the headline exists as a capacity sentence *and*
-    that it is the largest text on the card, since a verdict that is not the
-    biggest thing is not the verdict.
+    It is the largest text on the card (a verdict that is not the biggest thing is
+    not the verdict) and it names the shortest-payback capacity.
     """
     result = build()
     figure = build_summary_card(result, tariff=FLAT_TARIFF)
 
     headline = max(figure.texts, key=lambda t: t.get_fontsize())
-    assert "kWh is enough for this house" in headline.get_text()
-
-    best = max(
+    fastest = min(
         (s for s in result.scenarios if s.payback_years() is not None),
-        key=lambda s: -(s.payback_years() or 0),
+        key=lambda s: s.payback_years() or 0.0,
     )
-    assert f"{best.capacity_kwh:g} kWh" in headline.get_text()
+    assert headline.get_text() == f"{fastest.capacity_kwh:g} kWh pays back fastest"
+
+
+def test_headline_never_claims_a_capacity_is_sufficient() -> None:
+    """"Pays back fastest" is not "is enough" — the card must not upgrade the claim.
+
+    The fastest-payback capacity is routinely the *smallest* one, leaving most of
+    the PV surplus unused: on the fixture 5 kWh reaches 59% self-consumption where
+    20 kWh reaches 98%. Calling it "enough" states a sufficiency the tool never
+    measured, and states it directly above a chart that contradicts it.
+    """
+    # Spelled out per case rather than as a dict of kwargs: the four cases vary
+    # different parameters, so a single mapping has a heterogeneous value type and
+    # loses every argument's type at the call site.
+    variants = [
+        build(),
+        build(cost_per_kwh=None),
+        build(capacities=[10]),
+        build(days=60),
+    ]
+    for result in variants:
+        text = headline_for(result.scenarios)
+        assert "enough" not in text.lower(), text
+
+
+def test_headline_with_no_cost_recommends_no_size() -> None:
+    """Without a cost there is no payback, so there is no basis for a size at all.
+
+    `recommended_scenario` falls back to the largest absolute savings, which always
+    names the biggest battery in the sweep — precisely the trap this tool exists to
+    expose. The headline must report the saturation the chart shows instead of
+    laundering that fallback into a recommendation.
+    """
+    # A sweep that actually saturates: savings stop growing past 20 kWh here.
+    result = build(cost_per_kwh=None, capacities=[0, 5, 10, 15, 20, 30])
+    text = headline_for(result.scenarios)
+
+    largest = max(result.scenarios, key=lambda s: s.capacity_kwh)
+    assert "flatten beyond" in text
+    assert f"{largest.capacity_kwh:g} kWh" not in text, (
+        "the largest capacity must not be presented as the answer"
+    )
+
+
+def test_headline_with_a_single_capacity_makes_no_superlative_claim() -> None:
+    """One data point supports no "best" — there is nothing to be best against."""
+    text = headline_for(build(capacities=[10]).scenarios)
+
+    assert "fastest" not in text
+    assert "flatten" not in text
+    assert "10 kWh" in text
+    assert "only size analysed" in text
+
+
+def test_single_capacity_headline_does_not_repeat_a_stat() -> None:
+    """The headline must carry something the stats row does not already say.
+
+    It read "10 kWh pays back in 16.5 years" directly above "16.5 years / to pay
+    back" — the card's largest text spent restating the figure printed two
+    centimetres below it. Headline space is the scarcest resource on an artifact
+    the reader gives three seconds to, so it goes to the one thing the stats
+    cannot express: that a single size was analysed, and there is therefore no
+    comparison standing behind any number on the card.
+    """
+    result = build(capacities=[10])
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    headline = max(figure.texts, key=lambda t: t.get_fontsize()).get_text()
+
+    only = next(s for s in result.scenarios if s.capacity_kwh > 0)
+    payback = only.payback_years()
+    assert payback is not None
+
+    # The payback belongs to the stats row, and only to it.
+    assert f"{payback:.1f}" not in headline
+    assert f"{payback:.1f} years" in card_text(figure)
+    assert "only size analysed" in headline
 
 
 def test_savings_and_payback_are_subordinate_to_the_headline() -> None:
@@ -139,6 +232,277 @@ def test_savings_and_payback_are_subordinate_to_the_headline() -> None:
 
     ranked = sorted((s for s in sizes if isinstance(s, int | float)), reverse=True)
     assert ranked[0] > ranked[1], "the headline must outrank the stat values"
+
+
+def test_no_cost_stat_supports_the_flattening_headline() -> None:
+    """The stat under a "savings flatten" headline must be about the flattening.
+
+    The card said "Savings flatten beyond 15 kWh" and printed 462 EUR underneath —
+    the 20 kWh figure, i.e. the size the headline was implicitly advising against.
+    The two are read as one statement, so whichever the reader believed, the card
+    had told them the other. The marginal gain is what makes the headline true and
+    is a number no other element carries.
+    """
+    # A sweep whose saturation is partial rather than exact, so the marginal gain
+    # is a real figure: this household stops gaining at 20 kWh, so a knee at 17 has
+    # a little left to buy. The fully-saturated case is covered separately below.
+    result = build(cost_per_kwh=None, capacities=[0, 5, 10, 17, 25])
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    text = card_text(figure)
+
+    knee, largest = 17.0, 25.0
+    at_knee = next(s for s in result.scenarios if s.capacity_kwh == knee)
+    at_largest = next(s for s in result.scenarios if s.capacity_kwh == largest)
+    gain = at_largest.annual_savings_eur - at_knee.annual_savings_eur
+    assert round(gain) > 0, "this fixture must have a non-zero marginal gain"
+
+    assert f"Savings flatten beyond {knee:g} kWh" in text
+    assert f"+{gain:,.0f} EUR" in text
+    # The label names both ends, so the figure cannot be mistaken for a total.
+    assert f"per year from {knee:g} kWh to {largest:g} kWh" in text
+
+
+def test_a_fully_saturated_sweep_says_so_instead_of_printing_zero() -> None:
+    """"+0 EUR" in the card's second-largest text reads as a failure to compute.
+
+    It is the strongest form of the headline — the extra capacity bought literally
+    nothing — and a bare zero is the weakest way to say it. Saturation gets words
+    when the number has nothing left to add.
+    """
+    result = build(cost_per_kwh=None, capacities=[0, 5, 10, 15, 20, 30])
+    text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+
+    assert "Nothing" in text
+    assert "more saved per year from 20 kWh to 30 kWh" in text
+    assert "+0 EUR" not in text
+
+
+def test_no_cost_stat_never_leads_with_the_largest_capacity_savings() -> None:
+    """The figure that undercut the headline must not come back as the lead stat.
+
+    Pinned separately from the positive assertion above because this is the actual
+    defect: the largest battery's savings, printed prominently beneath a sentence
+    saying the extra capacity is not worth buying.
+    """
+    result = build(cost_per_kwh=None, capacities=[0, 5, 10, 15, 20, 30])
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+
+    largest = max(result.scenarios, key=lambda s: s.capacity_kwh)
+    stat_values = sorted(figure.texts, key=lambda t: t.get_fontsize(), reverse=True)
+    lead = stat_values[1].get_text()  # [0] is the headline
+
+    assert f"{largest.annual_savings_eur:,.0f} EUR" != lead
+
+
+# --- Bars always state their own value ---------------------------------------
+
+
+def bars_of(axes: Axes) -> list[Rectangle]:
+    """A panel's bars, read off the containers `bar()` registered.
+
+    Two reasons not to walk `axes.patches` instead. It is typed as `Patch`, which
+    carries neither `get_height` nor `get_width` — the bars are `Rectangle`s and do
+    — so every call site would need an ignore that mypy and Pyright disagree about.
+    And it holds more than the bars: the clipped-bar break and its detached stub
+    are patches too, and measuring those as if they were bars would quietly
+    corrupt any assertion about bar geometry.
+    """
+    return [bar for container in axes.containers for bar in container]
+
+
+def bar_labels(axes: Axes) -> list[str]:
+    """The direct labels drawn on a panel's bars, left to right."""
+    return [t.get_text() for t in axes.texts]
+
+
+@pytest.mark.parametrize(
+    ("capacities", "cost", "days", "tariff"),
+    [
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], None, 365, FLAT_TARIFF),
+        ([10], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 60, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, LOSING_TARIFF),
+    ],
+)
+def test_every_bar_carries_its_own_value(
+    capacities: list[float], cost: float | None, days: int, tariff: Tariff
+) -> None:
+    """No mute bars, on any variant. The rule is uniform, not per-case.
+
+    Labelling only the recommended bar left the reader to walk every other one back
+    to a gridline, which is the arithmetic the card exists to have already done —
+    and the argument the chart makes is about the *gaps* between capacities, which
+    cannot be read off two bars when neither states its value. Emphasis still ranks
+    the labels; it is no longer what decides whether one exists.
+    """
+    figure = build_summary_card(
+        build(capacities=capacities, cost_per_kwh=cost, days=days, tariff=tariff),
+        tariff=tariff,
+    )
+    for axes in figure.axes:
+        assert len(bar_labels(axes)) == len(bars_of(axes)), (
+            f"{axes.get_title(loc='left')}: one label per bar, no exceptions"
+        )
+
+
+def test_a_clipped_bar_is_labelled_like_every_other() -> None:
+    """The clipped-bar break and its stub are patches, not bars, and carry no label.
+
+    Worth its own case because it is where "one label per bar" could go wrong in
+    both directions: the extra patches could be counted as unlabelled bars, or the
+    clipped bar could keep the label it always had while the rest went mute. The
+    true figure is what the label must state — the height is capped, so the bar
+    alone understates it.
+    """
+    result = build(capacities=[0, 5, 10, 15], cost_per_kwh=DEFAULT_COST_PER_KWH)
+    inflated = [
+        s.model_copy(update={"battery_cost_eur": s.battery_cost_eur * 8})
+        if s.capacity_kwh == 15 and s.battery_cost_eur is not None
+        else s
+        for s in result.scenarios
+    ]
+    result = result.model_copy(update={"scenarios": inflated})
+
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    payback_axes = figure.axes[1]
+    assert len(payback_axes.patches) > len(bars_of(payback_axes)), (
+        "this fixture must actually clip a bar"
+    )
+
+    labels = bar_labels(payback_axes)
+    assert len(labels) == len(bars_of(payback_axes))
+
+    clipped = max(
+        (p for s in result.scenarios if (p := s.payback_years()) is not None),
+    )
+    assert f"{clipped:.1f}" in labels, "the true figure, not the capped height"
+
+
+def test_losing_bars_are_not_left_as_ghosts_but_saturating_ones_are() -> None:
+    """With nothing recommended, whether the bars carry weight depends on the case.
+
+    Both cards emphasize no bar, so a single rule would have to treat them alike,
+    and they are not alike. On the losing card the bars *are* the finding, and a
+    row of 0.32-alpha ghosts reads as tentative about a result the headline states
+    outright. On the saturating card the finding is the shape of the curve; four
+    bars at full strength say nothing more than four receded ones and start
+    competing with the headline they exist to support.
+    """
+    losing = build_summary_card(build(tariff=LOSING_TARIFF), tariff=LOSING_TARIFF)
+    saturating = build_summary_card(build(cost_per_kwh=None), tariff=FLAT_TARIFF)
+
+    assert all(bar.get_alpha() == 1.0 for bar in bars_of(losing.axes[0]))
+    assert all(bar.get_alpha() != 1.0 for bar in bars_of(saturating.axes[0]))
+
+
+def test_the_recommended_bar_label_still_reads_first() -> None:
+    """Every bar is labelled, but not equally: the recommendation keeps the weight.
+
+    Uniform labelling would flatten the hierarchy and cost the card its verdict.
+    The emphasized label is bold and full-ink; the rest are normal weight.
+    """
+    result = build()
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    best = min(
+        (s for s in result.scenarios if s.payback_years() is not None),
+        key=lambda s: s.payback_years() or 0.0,
+    )
+
+    payback = best.payback_years()
+    assert payback is not None
+
+    for axes in figure.axes:
+        bold = [t for t in axes.texts if t.get_fontweight() == "bold"]
+        assert len(bold) == 1, "exactly one label carries the emphasis"
+        label = bold[0].get_text()
+        # The emphasized label belongs to the recommended capacity, whichever
+        # measure the panel happens to be plotting.
+        assert f"{best.annual_savings_eur:,.0f}" in label or f"{payback:.1f}" in label
+
+
+@pytest.mark.parametrize(
+    ("capacities", "cost", "days", "tariff"),
+    [
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], None, 365, FLAT_TARIFF),
+        ([10], DEFAULT_COST_PER_KWH, 365, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 60, FLAT_TARIFF),
+        ([0, 5, 10, 15], DEFAULT_COST_PER_KWH, 365, LOSING_TARIFF),
+    ],
+)
+def test_no_bar_touches_the_top_of_its_panel(
+    capacities: list[float], cost: float | None, days: int, tariff: Tariff
+) -> None:
+    """Headroom above the tallest bar, on every panel of every variant.
+
+    A bar whose top lands on the frame reads as clipped — as though the panel could
+    not contain its own value — and its label, drawn above it, is clipped for real.
+    The 60-day card topped out at 300 with two bars sitting exactly on the edge.
+    """
+    figure = build_summary_card(
+        build(capacities=capacities, cost_per_kwh=cost, days=days, tariff=tariff),
+        tariff=tariff,
+    )
+    for axes in figure.axes:
+        bottom, top = axes.get_ylim()
+        span = top - bottom
+        heights = [bar.get_height() for bar in bars_of(axes)]
+        panel = axes.get_title(loc="left")
+        # Clearance is required on the side that carries the labels, and only
+        # there: labels sit above positive bars and below negative ones, so an
+        # all-positive panel is *supposed* to end at zero underneath. Requiring
+        # room on both sides would re-introduce the dead band item 3 removed.
+        tallest, lowest = max(heights), min(heights)
+        if tallest > 0:
+            assert top - tallest >= span * 0.10, (
+                f"{panel}: the tallest bar needs room for its label"
+            )
+        if lowest < 0:
+            assert lowest - bottom >= span * 0.10, (
+                f"{panel}: the lowest bar needs room for its label"
+            )
+
+
+def test_the_losing_panel_is_not_padded_into_empty_space_above_zero() -> None:
+    """Zero anchors the empty side: no axis running to +200 with nothing in it.
+
+    A fifth of the losing card's panel was spent on the region where the finding
+    is not, which flattened the losses it exists to show. Nothing is ever drawn or
+    written above zero when every bar is below it, so nothing is reserved there.
+    """
+    result = build(tariff=LOSING_TARIFF)
+    axes = build_summary_card(result, tariff=LOSING_TARIFF).axes[0]
+
+    bottom, top = axes.get_ylim()
+    span = top - bottom
+    assert 0.0 <= top <= span * 0.06, "zero is the top, give or take a hairline"
+    assert bottom < min(s.annual_savings_eur for s in result.scenarios)
+
+
+# --- Colour carries the sign -------------------------------------------------
+
+
+def test_losses_are_not_drawn_in_the_savings_colour() -> None:
+    """A bar that loses money must not look like a bar that earns it.
+
+    -1,254 EUR and +462 EUR were drawn in the same light blue, leaving the reader
+    to take the direction from the axis — the slowest thing on the panel to read.
+    Sign is not a category here, it is the threshold the whole card is about.
+    """
+    losing = build_summary_card(build(tariff=LOSING_TARIFF), tariff=LOSING_TARIFF)
+    earning = build_summary_card(build(), tariff=FLAT_TARIFF)
+
+    # Through `to_rgba` rather than comparing whatever `get_facecolor` returns:
+    # the same colour can come back as a name, a hex string or a tuple, and two
+    # spellings of one hue would make this test pass by accident.
+    loss_colours = {to_rgba(bar.get_facecolor()) for bar in bars_of(losing.axes[0])}
+    savings_colours = {to_rgba(bar.get_facecolor()) for bar in bars_of(earning.axes[0])}
+
+    assert loss_colours.isdisjoint(savings_colours)
+    # Red rather than merely different: the hue has to mean "lost", not "other".
+    for red, green, blue, _ in loss_colours:
+        assert red > green and red > blue
 
 
 # --- Honesty constraints -----------------------------------------------------
@@ -232,6 +596,31 @@ def test_card_and_report_point_at_the_same_repository() -> None:
     assert REPO_URL in report
 
 
+def test_card_savings_and_payback_are_mutually_consistent() -> None:
+    """The two headline stats must agree with each other, on any period length.
+
+    The card printed "199 EUR saved per year" beside "91.7 years to pay back" for a
+    3,000 EUR battery, where 3000/199 is 15.1 — the savings figure annualized and
+    the payback one did not. Two numbers side by side that a reader can divide in
+    their head must survive that division, and on a 60-day card they did not.
+    """
+    result = build(days=60, cost_per_kwh=600.0)
+    best = min(
+        (s for s in result.scenarios if s.payback_years() is not None),
+        key=lambda s: s.payback_years() or 0.0,
+    )
+    payback = best.payback_years()
+    assert payback is not None
+    assert best.battery_cost_eur is not None
+
+    text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+    assert f"{best.annual_savings_eur:,.0f} EUR" in text
+
+    # The division a reader would do, against the two figures actually printed.
+    implied = best.battery_cost_eur / best.annual_savings_eur
+    assert payback == pytest.approx(implied)
+
+
 def test_card_figures_match_the_report_annualization() -> None:
     """No recomputation: the card's savings figure is the report's, to the digit.
 
@@ -268,14 +657,14 @@ def test_no_battery_cost_omits_payback_entirely() -> None:
     assert len(figure.axes) == 1
 
 
-def test_no_battery_cost_still_recommends_on_savings() -> None:
-    """Falling back to largest savings, which is what `recommended_scenario` does."""
-    result = build(cost_per_kwh=None)
+def test_no_battery_cost_reports_saturation_instead_of_a_recommendation() -> None:
+    """The headline switches to what the data supports: where savings stop growing."""
+    result = build(cost_per_kwh=None, capacities=[0, 5, 10, 15, 20, 30])
     figure = build_summary_card(result, tariff=FLAT_TARIFF)
     headline = max(figure.texts, key=lambda t: t.get_fontsize()).get_text()
 
-    largest = max(result.scenarios, key=lambda s: s.savings_eur)
-    assert f"{largest.capacity_kwh:g} kWh" in headline
+    assert "flatten beyond" in headline
+    assert "pays back" not in headline, "there is no payback without a cost"
 
 
 def test_no_positive_savings_says_so_instead_of_promoting_a_loser() -> None:
@@ -317,9 +706,9 @@ def test_single_capacity_sweep_renders_a_comparison_not_a_slab() -> None:
     one = build_summary_card(build(capacities=[10]), tariff=FLAT_TARIFF)
     many = build_summary_card(build(capacities=[5, 10, 15, 20]), tariff=FLAT_TARIFF)
 
-    lone_bar = one.axes[0].patches[0]
-    crowd_bar = many.axes[0].patches[0]
-    assert lone_bar.get_width() <= crowd_bar.get_width()  # type: ignore[attr-defined]
+    lone_bar = bars_of(one.axes[0])[0]
+    crowd_bar = bars_of(many.axes[0])[0]
+    assert lone_bar.get_width() <= crowd_bar.get_width()
 
     span = one.axes[0].get_xlim()
     assert span[1] - span[0] >= 3.0, "the panel keeps its slots when the sweep is short"
@@ -338,34 +727,71 @@ def test_baseline_row_is_never_drawn_as_a_bar() -> None:
     assert len(figure.axes[0].patches) == 2
 
 
-def test_very_long_payback_is_clipped_but_labelled_with_the_true_value() -> None:
-    """A 90-year payback is capped on the axis and printed in full beside the bar.
+def test_paybacks_beyond_a_battery_lifetime_become_a_sentence_not_bars() -> None:
+    """When nothing pays back in time, bars are the wrong encoding and are dropped.
 
-    Unclipped, one outlier flattens every other bar into the baseline and destroys
-    the comparison. Clipped without the label, the reader is shown a shorter
-    payback than the data says — which would be the one unforgivable failure here.
+    Truncating them destroys the very thing a bar chart is for: on the 60-day card,
+    91.7 / 126.6 / 181.0 years rendered as three near-identical stubs, implying the
+    paybacks were similar when the longest was double the shortest. A chart that
+    misstates its own values is worse than no chart, so the panel is replaced by a
+    plain statement carrying the real shortest figure.
     """
-    # 60 days of data at a high cost per kWh: annualized savings stay small
-    # against a large battery cost, so payback lands far past the axis cap.
-    result = build(days=60, cost_per_kwh=4000.0)
-    text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+    result = build(days=60, cost_per_kwh=6000.0)
+    paybacks = [p for s in result.scenarios if (p := s.payback_years()) is not None]
+    assert paybacks and min(paybacks) > 20, "this fixture must overflow the horizon"
 
-    long_paybacks = [
-        p for s in result.scenarios if (p := s.payback_years()) is not None and p > 40
-    ]
-    assert long_paybacks, "the fixture for this test must actually overflow the axis"
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    text = card_text(figure)
 
-    payback_axes = build_summary_card(result, tariff=FLAT_TARIFF).axes[-1]
-    assert payback_axes.get_ylim()[1] < max(long_paybacks), "the axis is capped"
-    for payback in long_paybacks:
-        assert f"{payback:.1f}" in text, "the true value is printed, not the cap"
+    assert len(figure.axes) == 1, "only the savings panel is plotted"
+    assert "No capacity pays back within 20 years" in text
+    assert f"{min(paybacks):.1f} y" in text, "the real shortest payback is named"
+
+
+def test_the_replacement_sentence_names_the_capacity_that_achieves_it() -> None:
+    """"No capacity pays back" without a number reads as a failure to compute."""
+    result = build(days=60, cost_per_kwh=6000.0)
+    statement = no_payback_statement(result.scenarios)
+    assert statement is not None
+
+    fastest = min(
+        (s for s in result.scenarios if s.payback_years() is not None),
+        key=lambda s: s.payback_years() or 0.0,
+    )
+    assert f"at {fastest.capacity_kwh:g} kWh" in statement
+
+
+def test_paybacks_within_a_lifetime_are_still_drawn_as_bars() -> None:
+    """The sentence is the exception, not a replacement for the panel."""
+    figure = build_summary_card(build(), tariff=FLAT_TARIFF)
+    text = card_text(figure)
+
+    assert len(figure.axes) == 2
+    assert "No capacity pays back" not in text
 
 
 def test_renders_without_a_tariff() -> None:
     """The tariff is optional on the API, and the card degrades to omitting it."""
     text = card_text(build_summary_card(build(), tariff=None))
-    assert "is enough for this house" in text
+    assert "pays back fastest" in text
     assert "EUR/kWh" not in text
+
+
+def test_the_package_ships_its_py_typed_marker() -> None:
+    """Without it, every type hint in this strict-mode package is invisible downstream.
+
+    PEP 561: a package's annotations are only honoured by type checkers if it ships
+    a `py.typed` marker. Its absence cost nothing visible here — the suite passed,
+    ruff passed, `mypy src` passed — while `mypy tests` reported 25 `import-untyped`
+    errors and, far worse, silently degraded every symbol the tests imported to
+    `Any`. A strict-mode project whose own tests are unchecked is the failure this
+    marker prevents, and the same is true for anyone installing the package.
+
+    Pinned as a test because an empty file is exactly what a packaging refactor
+    drops without anything failing.
+    """
+    marker = Path(__file__).resolve().parent.parent / "src" / "battery_worth" / "py.typed"
+    assert marker.exists(), "PEP 561 marker missing: annotations stop at the package edge"
 
 
 def test_packaging_metadata_matches_the_printed_url() -> None:

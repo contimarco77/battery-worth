@@ -10,7 +10,13 @@ import pandas as pd
 import pytest
 
 from battery_worth.analysis import run_analysis
-from battery_worth.models import BatterySpec, IngestReport, Tariff, TariffKind
+from battery_worth.models import (
+    BatterySpec,
+    IngestReport,
+    ScenarioResult,
+    Tariff,
+    TariffKind,
+)
 
 
 def make_report(days: int = 365, resolution: int = 60) -> IngestReport:
@@ -272,3 +278,135 @@ def test_monotonicity_holds_under_f123_bands() -> None:
 
     savings = [s.savings_eur for s in result.scenarios]
     assert savings == sorted(savings), f"savings not monotonic under F1/F2/F3: {savings}"
+
+
+# --- Payback annualization ----------------------------------------------------
+#
+# Payback must be `cost / ANNUAL savings`, not `cost / period savings`. The two
+# coincide only on a dataset exactly one year long — which the project's own
+# fixture is, which is why this shipped unnoticed: on a 60-day file payback was
+# overstated by 365/60, i.e. 6x, and printed directly beside the annualized
+# savings figure that contradicted it.
+#
+# Every assertion below is anchored to a value computed *by hand in the test*,
+# never to another layer of our own code. This is the second bug of exactly this
+# shape (see PROJECT-CONTEXT.md, session 5's annualization drift), and both times
+# the whole suite agreed with itself while being uniformly wrong.
+
+
+def test_payback_divides_by_annualized_savings_not_period_savings() -> None:
+    """The arithmetic, pinned against a hand-computed number.
+
+    A battery costing 3,000 EUR that saves 32.7 EUR over 60 days is saving
+    32.7 * 365/60 = 198.9 EUR/year, so it pays back in 3000/198.9 = 15.08 years —
+    not the 91.7 that dividing by the period total produces.
+    """
+    scenario = ScenarioResult(
+        capacity_kwh=5.0,
+        battery_cost_eur=3000.0,
+        days_analyzed=60,
+        total_consumption_kwh=1000.0,
+        total_pv_kwh=800.0,
+        baseline_import_kwh=600.0,
+        baseline_export_kwh=400.0,
+        simulated_import_kwh=500.0,
+        simulated_export_kwh=300.0,
+        battery_cycles=50.0,
+        self_consumption_before=0.5,
+        self_consumption_after=0.6,
+        baseline_cost_eur=132.7,
+        simulated_cost_eur=100.0,
+    )
+
+    assert scenario.savings_eur == pytest.approx(32.7)
+    assert scenario.annual_savings_eur == pytest.approx(32.7 * 365 / 60)
+    assert scenario.payback_years() == pytest.approx(3000.0 / (32.7 * 365 / 60))
+    assert scenario.payback_years() == pytest.approx(15.083, abs=0.01)
+
+
+def test_payback_is_the_identity_on_a_full_year() -> None:
+    """At 365 days annualization is a no-op, so the naive division is correct there.
+
+    This is the case that hid the bug; it is pinned so a future "fix" cannot
+    reintroduce a scaling factor on the one period length users check by hand.
+    """
+    scenario = ScenarioResult(
+        capacity_kwh=5.0,
+        battery_cost_eur=3000.0,
+        days_analyzed=365,
+        total_consumption_kwh=1000.0,
+        total_pv_kwh=800.0,
+        baseline_import_kwh=600.0,
+        baseline_export_kwh=400.0,
+        simulated_import_kwh=500.0,
+        simulated_export_kwh=300.0,
+        battery_cycles=50.0,
+        self_consumption_before=0.5,
+        self_consumption_after=0.6,
+        baseline_cost_eur=300.0,
+        simulated_cost_eur=100.0,
+    )
+
+    assert scenario.annual_savings_eur == pytest.approx(200.0)
+    assert scenario.payback_years() == pytest.approx(15.0)
+
+
+def test_payback_is_near_invariant_to_the_length_of_the_period() -> None:
+    """The same repeating data truncated to 60/180/365 days pays back the same.
+
+    This is the whole point of annualizing, and it is the property the bug broke:
+    before the fix these three came out as roughly 6x, 2x and 1x of each other.
+    `make_solar_days` repeats an identical day, so any residual difference is
+    arithmetic, not seasonality — the tolerance is tight on purpose.
+    """
+    paybacks = []
+    for days in (60, 180, 365):
+        result = run_analysis(
+            make_solar_days(n_days=days),
+            make_report(days=days),
+            capacities=[5],
+            battery_template=TEMPLATE,
+            tariff=FLAT_TARIFF,
+            battery_cost_per_kwh=600.0,
+        )
+        payback = result.scenarios[0].payback_years()
+        assert payback is not None
+        paybacks.append(payback)
+
+    assert max(paybacks) - min(paybacks) < 0.05, (
+        f"payback should not depend on how much data was analyzed: {paybacks}"
+    )
+
+
+def test_sensitivity_paybacks_are_annualized_too() -> None:
+    """The export-price grid computes its own payback and had the same defect.
+
+    It shares neither the model's method nor its period, so it needs its own
+    assertion: a grid whose paybacks were 6x the table's would contradict the very
+    table it sits under.
+    """
+    days = 60
+    result = run_analysis(
+        make_solar_days(n_days=days),
+        make_report(days=days),
+        capacities=[5],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
+    )
+    sensitivity = result.export_sensitivity
+    assert sensitivity is not None
+
+    configured = [
+        p
+        for p in sensitivity.for_capacity(5.0)
+        if p.export_price_eur_kwh == pytest.approx(FLAT_TARIFF.export_price_eur_kwh)
+    ]
+    assert configured, "the configured export price must be in the default sweep"
+
+    scenario = result.scenarios[0]
+    assert configured[0].payback_years == pytest.approx(scenario.payback_years())
+    # And against hand arithmetic, not only against the model it must agree with.
+    assert configured[0].payback_years == pytest.approx(
+        3000.0 / (configured[0].savings_eur * 365 / days)
+    )
