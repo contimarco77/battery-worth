@@ -178,8 +178,12 @@ def _read_csv(path: Path, mapping: ColumnMapping, source_columns: list[str]) -> 
     return df
 
 
-def _localize(index: pd.DatetimeIndex, timezone: str) -> tuple[pd.DatetimeIndex, list[str]]:
+def localize_index(index: pd.DatetimeIndex, timezone: str) -> tuple[pd.DatetimeIndex, list[str]]:
     """Localize naive timestamps, handling both shapes of autumn DST data.
+
+    Public because `tariffs` localizes hourly price CSVs the same way: a price file
+    and an energy file covering the same changeover must be treated identically, or
+    they would silently misalign for one hour a year.
 
     `ambiguous="infer"` resolves the repeated hour from the data itself, but it only
     works when that hour actually appears twice (a Home Assistant export logs local
@@ -221,7 +225,7 @@ def _localize_and_sort(
     warnings: list[str] = []
 
     if index.tz is None:
-        localized, dst_warnings = _localize(index, timezone)
+        localized, dst_warnings = localize_index(index, timezone)
         warnings.extend(dst_warnings)
     else:
         localized = index.tz_convert(timezone)

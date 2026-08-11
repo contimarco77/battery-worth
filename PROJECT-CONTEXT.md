@@ -67,8 +67,9 @@ inbound senior-rate consulting. No active selling.
   - [x] `simulator.py` — greedy simulator + `summarize_scenario`
   - [ ] capacity sweep (multi-capacity orchestration, currently one spec per call)
   - [ ] CLI wiring (`cli.py` still a stub)
-- [ ] Milestone 2 — next: `tariffs.py` (blocks `summarize_scenario`, which needs an
-      `import_prices` series)
+- [ ] **Milestone 2 in progress**:
+  - [x] `tariffs.py` — flat / F1-F2-F3 / hourly CSV → per-interval price series
+  - [ ] jinja2 report (4 sections), PNG summary card
 - [ ] Milestone 3
 
 ## Validated invariants
@@ -81,6 +82,16 @@ and `import + pv - export` reproduces the source consumption total exactly.
 Simulator: `sim_import <= baseline_import`, `sim_export <= baseline_export`,
 SOC stays within `[min_soc*cap, cap]`, and round-trip loss equals
 `(1 - round_trip_efficiency)` of throughput.
+
+Cycle count is **equivalent full cycles on energy actually stored**
+(`charge * one_way_efficiency / usable_capacity`), not raw energy taken from
+surplus. The definition is in the `summarize_scenario` docstring because cycle
+counts appear in warranty terms and must be stated, not implied.
+
+Prices are never guessed: an hourly price CSV that does not cover every analysis
+timestamp raises, naming the uncovered range. A price row is valid for its own
+step only (half-open `[t, t+step)`), so a hole in the price file surfaces as an
+error instead of inheriting the previous hour's price.
 
 Known, accepted: netting at hourly resolution instead of native 30-min moves
 ~55 kWh/yr out of both import and export on the fixture (intra-hour surplus
@@ -107,6 +118,32 @@ consequence of the locked "downsample to hourly" decision.
   indistinguishable before it (autumn produces two distinct instants and never
   reaches the dedup step; spring produces a true collision).
 
+## Tariffs (decided, with rationale)
+
+- **`build_price_series(index, tariff) -> pd.Series`** is the whole public API,
+  plus `assign_bands()` and `italian_national_holidays()` exposed so the ARERA
+  calendar is testable without touching prices.
+- **Bands are read off local wall-clock time**, never UTC: in summer Rome is
+  UTC+2, so banding on UTC would shift every boundary by two hours.
+- **F1/F2/F3 is Italy-specific.** A non-Italian (or naive) index **warns** rather
+  than failing — the bands are still computable, the user just needs to know they
+  probably don't match their real tariff.
+- **Holidays are national only** (no local patron saints; Milan's 7 Dec is
+  deliberately absent). Easter Monday computed via `dateutil.easter`.
+- **`python-dateutil`** declared explicitly in dependencies: already a hard pandas
+  dep so it installs nothing new, but `tariffs.py` imports it directly. Chosen over
+  the `holidays` package — one function vs. a new wheel.
+- **Hourly CSV localized with the shared `ingest.localize_index`** (renamed from
+  `_localize`), not a copy: a price file and an energy file crossing the same DST
+  changeover must be treated identically or they misalign for an hour a year.
+  Consequence, tested: a *naive* price file cannot cover the 25-hour autumn day
+  (24 wall-clock stamps, 25 real hours) and correctly raises — supply prices with
+  explicit offsets/UTC to cross a changeover, which is how PUN data arrives anyway.
+- Duplicate price timestamps are **averaged, not summed** — opposite of the energy
+  path, because price is intensive and energy is extensive.
+- Unit sanity: warns if median price > 5 or < 0.001 EUR/kWh, since day-ahead data
+  (PUN) is published in EUR/MWh and pasting it raw is a silent 1000x error.
+
 ## Test fixture
 
 Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
@@ -130,3 +167,10 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   coherent). No code changes needed. Documented invariants, DST rationale and the
   fixture above. **Next: `tariffs.py`** (flat / F1-F2-F3 / hourly CSV → per-hour
   price series), which unblocks `summarize_scenario` and the capacity sweep.
+- **2026-08-11 (2)** — Fixed `battery_cycles`: was counting energy taken from surplus
+  rather than energy stored, overstating cycles ~5% at 0.90 round-trip (290.4 → 275.5
+  on the fixture). Definition now documented in the docstring. Implemented `tariffs.py`
+  (all three kinds) + 34 tests; renamed `ingest._localize` → `localize_index` for reuse.
+  Verified end to end on the fixture: flat 0.25 EUR/kWh → 363 EUR/yr savings, 16.5y
+  payback on a 6000 EUR battery. Suite 64 passed, ruff clean, mypy strict clean.
+  **Next: capacity sweep + CLI wiring** to close Milestone 1, then the jinja2 report.

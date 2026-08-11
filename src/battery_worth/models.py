@@ -115,6 +115,12 @@ class Tariff(BaseModel):
     f2_price: float | None = Field(default=None, gt=0)
     f3_price: float | None = Field(default=None, gt=0)
     hourly_prices_csv: str | None = None
+    hourly_prices_timestamp_column: str = Field(
+        default="timestamp", description="Timestamp column name in the hourly price CSV"
+    )
+    hourly_prices_price_column: str = Field(
+        default="price", description="Price column name (EUR/kWh) in the hourly price CSV"
+    )
     export_price_eur_kwh: float = Field(default=0.10, ge=0)
 
     @model_validator(mode="after")
