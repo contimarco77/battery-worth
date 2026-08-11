@@ -61,16 +61,20 @@ inbound senior-rate consulting. No active selling.
 
 - [x] Scope defined, decisions locked
 - [x] Repo skeleton (pyproject, models, CLI stub, simulator stub, first tests)
-- [ ] **Milestone 1 nearly done**:
+- [x] **Milestone 1 DONE** — the engine runs end to end from the command line:
   - [x] pydantic models (ColumnMapping, IngestReport, BatterySpec, Tariff, ScenarioResult)
   - [x] `ingest.py` — CSV parser, both schemas, cumulative auto-detect, DST, resampling
   - [x] `simulator.py` — greedy simulator + `summarize_scenario`
-  - [ ] capacity sweep (multi-capacity orchestration, currently one spec per call)
-  - [ ] CLI wiring (`cli.py` still a stub)
+  - [x] `analysis.py` — `run_analysis` capacity sweep, price series built once, capacity-0 baseline
+  - [x] `cli.py` — `battery-worth analyze` wired end to end, plain-text output
 - [ ] **Milestone 2 in progress**:
   - [x] `tariffs.py` — flat / F1-F2-F3 / hourly CSV → per-interval price series
+    (built early — see the 2026-08-11 (2) session log entry)
+  - [x] savings + payback (in `ScenarioResult`, surfaced by the sweep and the CLI table)
   - [ ] jinja2 report (4 sections), PNG summary card
 - [ ] Milestone 3
+
+Suite: 103 tests passing, ruff clean, mypy strict clean.
 
 ## Validated invariants
 
@@ -87,6 +91,18 @@ Cycle count is **equivalent full cycles on energy actually stored**
 (`charge * one_way_efficiency / usable_capacity`), not raw energy taken from
 surplus. The definition is in the `summarize_scenario` docstring because cycle
 counts appear in warranty terms and must be stated, not implied.
+
+Capacity sweep: savings are **monotonically non-decreasing in capacity** and
+**saturate** once the battery can absorb all available surplus. Both are asserted
+in `tests/test_analysis.py`, under a flat tariff and under F1/F2/F3 — monotonicity
+is a property of greedy self-consumption (nothing trades present savings for
+future savings), not of the flat price, so it must hold under banded prices too.
+
+The capacity-0 baseline row is **not simulated**: `BatterySpec` requires positive
+capacity, and it carries `battery_cost_eur = None` so `payback_years()` returns
+None. A "0.0 year payback" on the do-nothing row would be the single most
+misleading number the comparison table could print. A test pins the hand-built
+baseline against the simulator's own baseline figures so the two paths cannot drift.
 
 Prices are never guessed: an hourly price CSV that does not cover every analysis
 timestamp raises, naming the uncovered range. A price row is valid for its own
@@ -174,3 +190,42 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   Verified end to end on the fixture: flat 0.25 EUR/kWh → 363 EUR/yr savings, 16.5y
   payback on a 6000 EUR battery. Suite 64 passed, ruff clean, mypy strict clean.
   **Next: capacity sweep + CLI wiring** to close Milestone 1, then the jinja2 report.
+- **2026-08-11 (3)** — **Milestone 1 closed.** Added `analysis.py` (`run_analysis`:
+  sweep capacities, build the price series once outside the loop, capacity-0 baseline)
+  and rewrote `cli.py` so `battery-worth analyze` runs end to end in plain text.
+  Suite 64 → 103, ruff and mypy strict clean.
+
+  *Plan deviation, recorded rather than retconned:* `tariffs.py` is a Milestone 2
+  item but was built in session (2), before the Milestone 1 sweep and CLI. The
+  milestone list above is deliberately left as originally written. The reason it
+  happened: `summarize_scenario` takes a price series, so there was no way to
+  produce a scenario — let alone a comparison table — without tariffs existing
+  first. The milestone boundary put the economics in M2 while M1's own capacity
+  sweep already depended on them; the dependency, not the plan, decided the order.
+  Worth remembering when planning M3: check what the milestone's *last* step needs
+  before assuming the milestone is self-contained.
+
+  Three CLI decisions worth carrying forward:
+  - An empty `@app.callback()` keeps Typer in multi-command mode. Without it Typer
+    promotes a lone command to the top level and the locked surface would silently
+    become `battery-worth <file>` instead of `battery-worth analyze <file>`.
+  - The unrecognised-columns error is handled in the CLI, not in `ingest`, because
+    it must list the header actually found alongside *both* accepted schemas and a
+    copy-pasteable `--col-*` example. This is the most likely first-run failure for
+    a new user, and it is covered by its own tests.
+  - `warnings.catch_warnings(record=True)` wraps ingest + analysis so tariff
+    warnings (non-Italian timezone, EUR/MWh units) land in the report's WARNINGS
+    block instead of interleaving with stdout. Ingest warnings and captured runtime
+    warnings are printed together, verbatim, numbered, and never summarized.
+
+  Verified on the Ausgrid fixture (365 d, flat 0.25, export 0.10, 600 EUR/kWh):
+  5 kWh → 211 EUR/yr, 14.2 y · 10 kWh → 363 EUR/yr, 16.5 y · 15 kWh → 442 EUR/yr,
+  20.4 y · 20 kWh → 462 EUR/yr, 26.0 y. Self-consumption 26% → 59/82/95/98%. The
+  10 kWh row reproduces session (2)'s figure exactly, which cross-checks the sweep
+  against the earlier manual run. Savings saturate visibly (+79 EUR from 10→15 kWh,
+  +20 EUR from 15→20) and shortest payback is the *smallest* battery — exactly the
+  tension the comparison table exists to show.
+
+  **Next: Milestone 2 proper** — jinja2 report (4 fixed sections) + matplotlib
+  summary card. The CLI's plain-text sections map 1:1 onto the report's, so the
+  renderer can consume `AnalysisResult` + `IngestReport` without new engine work.
