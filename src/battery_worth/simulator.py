@@ -92,6 +92,15 @@ def summarize_scenario(
 
     `import_prices` must be a per-interval EUR/kWh series aligned with sim_df's index
     (built by tariffs.py from the configured Tariff).
+
+    Cycle definition (stated explicitly, because cycle counts appear in warranty
+    terms): `battery_cycles` is **equivalent full cycles**, defined as the total
+    energy actually stored in the battery divided by its usable capacity. Energy
+    stored is `battery_charge_kwh * one_way_efficiency` — the charge column holds
+    energy taken FROM the PV surplus, before charge losses, so using it directly
+    would overstate cycles by roughly 5% at the default 0.90 round-trip.
+    Counting on the charge side means a cycle is booked when energy goes in;
+    energy still sitting in the battery at the end of the period is included.
     """
     total_pv = float(sim_df["pv_production"].sum())
     baseline_import = float(sim_df["grid_import"].sum())
@@ -108,7 +117,8 @@ def summarize_scenario(
     )
     sim_cost = float((sim_df["sim_import"] * import_prices).sum() - sim_export * export_price)
 
-    cycles = float(sim_df["battery_charge_kwh"].sum()) / spec.usable_capacity_kwh
+    energy_stored = float(sim_df["battery_charge_kwh"].sum()) * spec.one_way_efficiency
+    cycles = energy_stored / spec.usable_capacity_kwh
 
     return ScenarioResult(
         capacity_kwh=spec.usable_capacity_kwh,

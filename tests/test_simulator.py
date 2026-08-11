@@ -76,6 +76,45 @@ def test_summary_self_consumption_and_savings() -> None:
     assert result.savings_eur == pytest.approx(0.40)
 
 
+def test_battery_cycles_counts_energy_actually_stored() -> None:
+    """Cycles are equivalent full cycles on energy STORED, not energy taken from surplus.
+
+    4 kWh of surplus is offered to a 2 kWh battery at 81% round-trip (one-way 0.9),
+    spread so nothing is capacity-limited: each 1 kWh of surplus stores 0.9 kWh.
+    Energy stored = 4 * 0.9 = 3.6 kWh -> 3.6 / 2 = 1.8 equivalent full cycles.
+    Using the raw charge column instead would give 4 / 2 = 2.0, overstating by 11%.
+    """
+    df = make_df(
+        imports=[0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0],
+        exports=[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        pv=[1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+    )
+    spec = BatterySpec(usable_capacity_kwh=2, round_trip_efficiency=0.81)
+    out = simulate_battery(df, spec)
+    prices = pd.Series(0.30, index=df.index)
+
+    result = summarize_scenario(out, spec, prices, export_price=0.10)
+
+    assert out["battery_charge_kwh"].sum() == pytest.approx(4.0)
+    assert result.battery_cycles == pytest.approx(1.8)
+
+
+def test_battery_cycles_lossless_is_exact() -> None:
+    """At 100% efficiency, stored == charged: 3 kWh through a 1.5 kWh battery = 2 cycles."""
+    df = make_df(
+        imports=[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+        exports=[1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        pv=[1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+    )
+    spec = BatterySpec(usable_capacity_kwh=1.5, round_trip_efficiency=1.0)
+    out = simulate_battery(df, spec)
+    prices = pd.Series(0.30, index=df.index)
+
+    result = summarize_scenario(out, spec, prices, export_price=0.10)
+
+    assert result.battery_cycles == pytest.approx(2.0)
+
+
 def test_min_soc_reserved() -> None:
     """With min_soc=0.5 on a 2 kWh battery, only 1 kWh is usable for discharge."""
     df = make_df(imports=[0.0, 3.0], exports=[3.0, 0.0], pv=[3.0, 0.0])
