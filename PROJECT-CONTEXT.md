@@ -61,10 +61,72 @@ inbound senior-rate consulting. No active selling.
 
 - [x] Scope defined, decisions locked
 - [x] Repo skeleton (pyproject, models, CLI stub, simulator stub, first tests)
-- [ ] Milestone 1 in progress: simulator implementation
-- [ ] Milestone 2
+- [ ] **Milestone 1 nearly done**:
+  - [x] pydantic models (ColumnMapping, IngestReport, BatterySpec, Tariff, ScenarioResult)
+  - [x] `ingest.py` — CSV parser, both schemas, cumulative auto-detect, DST, resampling
+  - [x] `simulator.py` — greedy simulator + `summarize_scenario`
+  - [ ] capacity sweep (multi-capacity orchestration, currently one spec per call)
+  - [ ] CLI wiring (`cli.py` still a stub)
+- [ ] Milestone 2 — next: `tariffs.py` (blocks `summarize_scenario`, which needs an
+      `import_prices` series)
 - [ ] Milestone 3
+
+## Validated invariants
+
+Energy is conserved across localization, deduplication and hourly resampling.
+Verified on synthetic DST cases (tests/test_ingest.py) and on 365 days of real
+30-minute data (see Test fixture): PV total in == PV total out to the milli-kWh,
+and `import + pv - export` reproduces the source consumption total exactly.
+
+Simulator: `sim_import <= baseline_import`, `sim_export <= baseline_export`,
+SOC stays within `[min_soc*cap, cap]`, and round-trip loss equals
+`(1 - round_trip_efficiency)` of throughput.
+
+Known, accepted: netting at hourly resolution instead of native 30-min moves
+~55 kWh/yr out of both import and export on the fixture (intra-hour surplus
+cancels intra-hour deficit). It cancels out of the energy balance and makes the
+battery look slightly *less* valuable, so it is a conservative direction. Direct
+consequence of the locked "downsample to hourly" decision.
+
+## DST handling (decided, with rationale)
+
+- **Autumn / ambiguous hour**: `ambiguous="infer"` is the primary path — it
+  resolves the repeated hour from the data when the hour genuinely appears twice
+  (Home Assistant style). When it appears only once (public datasets, inverter
+  CSVs, anything written against a naive local clock with fixed slots/day),
+  infer raises; the fallback reads it as the first, pre-changeover pass and warns.
+  Worst case shifts one hour of energy per year.
+- **Spring / nonexistent hour**: `nonexistent="shift_forward"` collides the
+  missing hour onto the next one. Colliding rows are **summed** — they are two
+  separate intervals of real energy that happen to share a timestamp.
+- **Byte-identical rows are dropped, not summed.** The asymmetry is deliberate:
+  an exact repeat of timestamp *and* values is the same reading exported twice.
+  Under-counting one hour per year is noise; inventing energy that never flowed
+  is a false number, and this tool's whole value is that its numbers are real.
+- Duplicates are resolved **after** localization, because the two DST cases are
+  indistinguishable before it (autumn produces two distinct instants and never
+  reaches the dedup step; spring produces a true collision).
+
+## Test fixture
+
+Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
+(Australia/Sydney, meter-centric schema: consumption + pv_production).
+
+- Path: `~/personal-projects/_datasets/ausgrid/Ausgrid_solar_home_data/customer_1_2012-2013.csv`
+- 17520 rows, 365 days, 30-min intervals, no missing slots
+- PV 5115.207 kWh, consumption 7679.201 kWh
+- Fixed 48 slots/day, so both changeover days exercise the DST paths: autumn
+  triggers the single-occurrence fallback, spring triggers both the
+  identical-drop and the sum branch on one timestamp (net loss 0.000 kWh)
+- `scripts/extract_ausgrid_customer.py` regenerates it from the raw dataset
+  (`Solar home 2012-2013.csv`); the raw files are not in the repo
 
 ## Session log
 
-- (add entries here: date — what was done — next step)
+- **2026-08-11** — Field-tested `ingest.py` against the real Ausgrid fixture (first
+  contact with data it wasn't written against): all report fields correct, energy
+  conserved exactly, both DST branches fired and read clearly. Ran the 10 kWh
+  simulation end to end (self-consumption 25.7% → 82.5%, 290 cycles/yr, balance
+  coherent). No code changes needed. Documented invariants, DST rationale and the
+  fixture above. **Next: `tariffs.py`** (flat / F1-F2-F3 / hourly CSV → per-hour
+  price series), which unblocks `summarize_scenario` and the capacity sweep.
