@@ -107,13 +107,15 @@ def test_recosting_agrees_with_a_full_rerun_at_that_price() -> None:
     other_price = 0.22
 
     fast = run_analysis(
-        df, report, capacities=[10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+        df,
+        report,
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
         export_price_sweep=[other_price],
     )
     rerun_tariff = FLAT_TARIFF.model_copy(update={"export_price_eur_kwh": other_price})
-    slow = run_analysis(
-        df, report, capacities=[10], battery_template=TEMPLATE, tariff=rerun_tariff
-    )
+    slow = run_analysis(df, report, capacities=[10], battery_template=TEMPLATE, tariff=rerun_tariff)
 
     assert fast.export_sensitivity is not None
     recosted = fast.export_sensitivity.for_capacity(10.0)[0]
@@ -145,7 +147,11 @@ def test_payback_tracks_the_recosted_savings() -> None:
 def test_no_payback_without_a_battery_cost() -> None:
     df = make_solar_days()
     result = run_analysis(
-        df, make_report(), capacities=[10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+        df,
+        make_report(),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
         export_price_sweep=[0.05],
     )
     sensitivity = result.export_sensitivity
@@ -185,7 +191,11 @@ def test_baseline_row_is_flat_across_export_prices() -> None:
     """The no-battery row diverts nothing, so re-costing cannot move it off zero."""
     df = make_solar_days()
     result = run_analysis(
-        df, make_report(), capacities=[0, 10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+        df,
+        make_report(),
+        capacities=[0, 10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
         export_price_sweep=[0.0, 0.10, 0.50],
     )
     sensitivity = result.export_sensitivity
@@ -212,9 +222,7 @@ def test_default_sweep_brackets_the_configured_price() -> None:
 def test_default_sweep_steps_absolutely_when_export_price_is_zero() -> None:
     """Scaling by 0.5/1.5 around zero would collapse to a single point at 0."""
     df = make_solar_days()
-    free_export = Tariff(
-        kind=TariffKind.FLAT, flat_price_eur_kwh=0.30, export_price_eur_kwh=0.0
-    )
+    free_export = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.30, export_price_eur_kwh=0.0)
     result = run_analysis(
         df, make_report(), capacities=[10], battery_template=TEMPLATE, tariff=free_export
     )
@@ -228,7 +236,11 @@ def test_at_the_configured_price_savings_match_the_scenario_exactly() -> None:
     """The sweep must not disagree with the table it sits under."""
     df = make_solar_days()
     result = run_analysis(
-        df, make_report(), capacities=[5, 10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+        df,
+        make_report(),
+        capacities=[5, 10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
         export_price_sweep=[0.10],
     )
     sensitivity = result.export_sensitivity
@@ -242,7 +254,11 @@ def test_at_the_configured_price_savings_match_the_scenario_exactly() -> None:
 def test_explicit_prices_deduplicated_and_sorted() -> None:
     df = make_solar_days()
     result = run_analysis(
-        df, make_report(), capacities=[10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+        df,
+        make_report(),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
         export_price_sweep=[0.2, 0.05, 0.2, 0.1],
     )
     sensitivity = result.export_sensitivity
@@ -254,7 +270,11 @@ def test_empty_sweep_rejected() -> None:
     df = make_solar_days()
     with pytest.raises(ValueError, match="at least one price"):
         run_analysis(
-            df, make_report(), capacities=[10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+            df,
+            make_report(),
+            capacities=[10],
+            battery_template=TEMPLATE,
+            tariff=FLAT_TARIFF,
             export_price_sweep=[],
         )
 
@@ -263,7 +283,11 @@ def test_negative_export_price_rejected() -> None:
     df = make_solar_days()
     with pytest.raises(ValueError, match="zero or positive"):
         run_analysis(
-            df, make_report(), capacities=[10], battery_template=TEMPLATE, tariff=FLAT_TARIFF,
+            df,
+            make_report(),
+            capacities=[10],
+            battery_template=TEMPLATE,
+            tariff=FLAT_TARIFF,
             export_price_sweep=[0.1, -0.05],
         )
 
@@ -272,11 +296,18 @@ def test_monotonicity_holds_under_banded_prices() -> None:
     """The invariant comes from the strategy, not from a flat import price."""
     df = make_solar_days()
     banded = Tariff(
-        kind=TariffKind.F1_F2_F3, f1_price=0.35, f2_price=0.30, f3_price=0.25,
+        kind=TariffKind.F1_F2_F3,
+        f1_price=0.35,
+        f2_price=0.30,
+        f3_price=0.25,
         export_price_eur_kwh=0.10,
     )
     result = run_analysis(
-        df, make_report(), capacities=[5, 15], battery_template=TEMPLATE, tariff=banded,
+        df,
+        make_report(),
+        capacities=[5, 15],
+        battery_template=TEMPLATE,
+        tariff=banded,
         export_price_sweep=[0.0, 0.1, 0.2, 0.4],
     )
     sensitivity = result.export_sensitivity

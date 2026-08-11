@@ -91,8 +91,14 @@ def test_payback_shown_when_cost_given(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(meter_csv), "--capacities", "5", "--flat-price", "0.25",
-            "--battery-cost-per-kwh", "600",
+            "analyze",
+            str(meter_csv),
+            "--capacities",
+            "5",
+            "--flat-price",
+            "0.25",
+            "--battery-cost-per-kwh",
+            "600",
         ],
     )
 
@@ -102,9 +108,7 @@ def test_payback_shown_when_cost_given(meter_csv: Path) -> None:
 
 
 def test_missing_file_is_user_error(tmp_path: Path) -> None:
-    result = runner.invoke(
-        app, ["analyze", str(tmp_path / "nope.csv"), "--flat-price", "0.25"]
-    )
+    result = runner.invoke(app, ["analyze", str(tmp_path / "nope.csv"), "--flat-price", "0.25"])
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
     assert "not found" in result.output
@@ -140,10 +144,16 @@ def test_column_overrides_make_a_nonstandard_csv_work(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(path), "--flat-price", "0.25",
-            "--col-timestamp", "Date",
-            "--col-consumption", "Usage",
-            "--col-pv-production", "Generation",
+            "analyze",
+            str(path),
+            "--flat-price",
+            "0.25",
+            "--col-timestamp",
+            "Date",
+            "--col-consumption",
+            "Usage",
+            "--col-pv-production",
+            "Generation",
         ],
     )
 
@@ -160,10 +170,16 @@ def test_wrong_override_names_missing_column_and_header(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(path), "--flat-price", "0.25",
-            "--col-timestamp", "Date",
-            "--col-consumption", "Consumo",
-            "--col-pv-production", "Generation",
+            "analyze",
+            str(path),
+            "--flat-price",
+            "0.25",
+            "--col-timestamp",
+            "Date",
+            "--col-consumption",
+            "Consumo",
+            "--col-pv-production",
+            "Generation",
         ],
     )
 
@@ -183,8 +199,16 @@ def test_flat_and_bands_together_rejected(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(meter_csv), "--flat-price", "0.25",
-            "--f1", "0.35", "--f2", "0.30", "--f3", "0.25",
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--f1",
+            "0.35",
+            "--f2",
+            "0.30",
+            "--f3",
+            "0.25",
         ],
     )
 
@@ -207,9 +231,7 @@ def test_flat_and_prices_csv_together_rejected(meter_csv: Path, tmp_path: Path) 
 
 
 def test_partial_bands_rejected(meter_csv: Path) -> None:
-    result = runner.invoke(
-        app, ["analyze", str(meter_csv), "--f1", "0.35", "--f2", "0.30"]
-    )
+    result = runner.invoke(app, ["analyze", str(meter_csv), "--f1", "0.35", "--f2", "0.30"])
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
     assert "--f3" in result.output
@@ -219,8 +241,16 @@ def test_band_tariff_runs(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(meter_csv), "--capacities", "5",
-            "--f1", "0.35", "--f2", "0.30", "--f3", "0.25",
+            "analyze",
+            str(meter_csv),
+            "--capacities",
+            "5",
+            "--f1",
+            "0.35",
+            "--f2",
+            "0.30",
+            "--f3",
+            "0.25",
         ],
     )
 
@@ -232,9 +262,9 @@ def test_hourly_price_csv_runs(meter_csv: Path, tmp_path: Path) -> None:
     """A price file covering the whole analysis period prices every hour."""
     idx = pd.date_range("2025-01-01", periods=60 * 24, freq="h")
     prices = tmp_path / "prices.csv"
-    pd.DataFrame(
-        {"timestamp": idx.strftime("%Y-%m-%d %H:%M:%S"), "price": 0.25}
-    ).to_csv(prices, index=False)
+    pd.DataFrame({"timestamp": idx.strftime("%Y-%m-%d %H:%M:%S"), "price": 0.25}).to_csv(
+        prices, index=False
+    )
 
     result = runner.invoke(
         app, ["analyze", str(meter_csv), "--capacities", "5", "--prices-csv", str(prices)]
@@ -257,13 +287,11 @@ def test_price_csv_not_covering_period_is_user_error(meter_csv: Path, tmp_path: 
     """A short price file must fail loudly rather than silently pricing part of the year."""
     idx = pd.date_range("2025-01-01", periods=48, freq="h")
     prices = tmp_path / "short.csv"
-    pd.DataFrame(
-        {"timestamp": idx.strftime("%Y-%m-%d %H:%M:%S"), "price": 0.25}
-    ).to_csv(prices, index=False)
-
-    result = runner.invoke(
-        app, ["analyze", str(meter_csv), "--prices-csv", str(prices)]
+    pd.DataFrame({"timestamp": idx.strftime("%Y-%m-%d %H:%M:%S"), "price": 0.25}).to_csv(
+        prices, index=False
     )
+
+    result = runner.invoke(app, ["analyze", str(meter_csv), "--prices-csv", str(prices)])
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
     assert "does not cover" in result.output
@@ -329,9 +357,7 @@ def test_all_ingest_warnings_are_printed_verbatim(tmp_path: Path) -> None:
     df["pv_production"] = 0.0  # triggers the all-zero column warning
     df.to_csv(path, index=False)
 
-    result = runner.invoke(
-        app, ["analyze", str(path), "--capacities", "5", "--flat-price", "0.25"]
-    )
+    result = runner.invoke(app, ["analyze", str(path), "--capacities", "5", "--flat-price", "0.25"])
 
     assert result.exit_code == 0, result.output
     assert "WARNINGS" in result.output
@@ -342,8 +368,14 @@ def test_mixed_column_schemas_rejected(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "analyze", str(meter_csv), "--flat-price", "0.25",
-            "--col-consumption", "consumption", "--col-grid-import", "grid_import",
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--col-consumption",
+            "consumption",
+            "--col-grid-import",
+            "grid_import",
         ],
     )
 
@@ -372,8 +404,18 @@ def test_output_writes_a_markdown_report(meter_csv: Path, tmp_path: Path) -> Non
     target = tmp_path / "report.md"
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5,10",
-         "--battery-cost-per-kwh", "600", "--output", str(target)],
+        [
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--capacities",
+            "0,5,10",
+            "--battery-cost-per-kwh",
+            "600",
+            "--output",
+            str(target),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -386,9 +428,7 @@ def test_output_writes_a_markdown_report(meter_csv: Path, tmp_path: Path) -> Non
     assert f"Report written to {target}" in result.output
 
 
-def test_terminal_output_identical_with_and_without_output(
-    meter_csv: Path, tmp_path: Path
-) -> None:
+def test_terminal_output_identical_with_and_without_output(meter_csv: Path, tmp_path: Path) -> None:
     """--output is purely additive: it must not reshape what lands on stdout.
 
     Both artifacts it produces — the report and the summary card beside it —
@@ -401,8 +441,7 @@ def test_terminal_output_identical_with_and_without_output(
     assert without.exit_code == 0
     assert with_file.exit_code == 0
     trailers = (
-        f"Report written to {tmp_path / 'r.md'}\n"
-        f"Summary card written to {tmp_path / 'r.png'}\n"
+        f"Report written to {tmp_path / 'r.md'}\nSummary card written to {tmp_path / 'r.png'}\n"
     )
     assert with_file.output.replace(trailers, "") == without.output
 
@@ -412,8 +451,18 @@ def test_card_is_written_alongside_the_report(meter_csv: Path, tmp_path: Path) -
     target = tmp_path / "report.md"
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
-         "--battery-cost-per-kwh", "600", "--output", str(target)],
+        [
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--capacities",
+            "0,5",
+            "--battery-cost-per-kwh",
+            "600",
+            "--output",
+            str(target),
+        ],
     )
 
     card = tmp_path / "report.png"
@@ -428,8 +477,17 @@ def test_no_card_skips_it(meter_csv: Path, tmp_path: Path) -> None:
     target = tmp_path / "report.md"
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
-         "--output", str(target), "--no-card"],
+        [
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--capacities",
+            "0,5",
+            "--output",
+            str(target),
+            "--no-card",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -463,8 +521,16 @@ def test_card_reports_its_own_write_failure(meter_csv: Path, tmp_path: Path) -> 
 
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
-         "--output", str(target)],
+        [
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--capacities",
+            "0,5",
+            "--output",
+            str(target),
+        ],
     )
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
@@ -477,8 +543,7 @@ def test_output_to_an_unwritable_path_is_a_user_error(meter_csv: Path, tmp_path:
     blocker.write_text("not a directory")
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25",
-         "--output", str(blocker / "report.md")],
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--output", str(blocker / "report.md")],
     )
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
@@ -489,8 +554,18 @@ def test_export_price_sweep_reaches_the_report(meter_csv: Path, tmp_path: Path) 
     target = tmp_path / "report.md"
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "5",
-         "--export-price-sweep", "0,0.2", "--output", str(target)],
+        [
+            "analyze",
+            str(meter_csv),
+            "--flat-price",
+            "0.25",
+            "--capacities",
+            "5",
+            "--export-price-sweep",
+            "0,0.2",
+            "--output",
+            str(target),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -502,8 +577,7 @@ def test_export_price_sweep_reaches_the_report(meter_csv: Path, tmp_path: Path) 
 def test_export_price_sweep_rejects_non_numbers(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25",
-         "--export-price-sweep", "0.1,cheap"],
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--export-price-sweep", "0.1,cheap"],
     )
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
@@ -513,8 +587,7 @@ def test_export_price_sweep_rejects_non_numbers(meter_csv: Path) -> None:
 def test_export_price_sweep_rejects_negatives(meter_csv: Path) -> None:
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--flat-price", "0.25",
-         "--export-price-sweep", "0.1,-0.2"],
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--export-price-sweep", "0.1,-0.2"],
     )
 
     assert result.exit_code == USER_ERROR_EXIT_CODE
@@ -531,9 +604,7 @@ def test_empty_export_price_sweep_is_a_user_error(meter_csv: Path) -> None:
     assert "--export-price-sweep is empty" in result.output
 
 
-def test_terminal_and_report_print_the_same_annual_savings(
-    meter_csv: Path, tmp_path: Path
-) -> None:
+def test_terminal_and_report_print_the_same_annual_savings(meter_csv: Path, tmp_path: Path) -> None:
     """One run, two outputs: the annualized figures must agree exactly.
 
     The terminal table and the Markdown report annualize the same scenarios by
@@ -543,8 +614,18 @@ def test_terminal_and_report_print_the_same_annual_savings(
     report_path = tmp_path / "report.md"
     result = runner.invoke(
         app,
-        ["analyze", str(meter_csv), "--capacities", "5,10", "--flat-price", "0.25",
-         "--battery-cost-per-kwh", "600", "--output", str(report_path)],
+        [
+            "analyze",
+            str(meter_csv),
+            "--capacities",
+            "5,10",
+            "--flat-price",
+            "0.25",
+            "--battery-cost-per-kwh",
+            "600",
+            "--output",
+            str(report_path),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -553,7 +634,8 @@ def test_terminal_and_report_print_the_same_annual_savings(
     # The terminal prints "  5 kWh   <savings>€ ..."; the report "| 5 kWh | <savings> EUR |".
     for capacity in ("5", "10"):
         terminal_row = next(
-            line for line in result.output.splitlines()
+            line
+            for line in result.output.splitlines()
             if line.strip().startswith(f"{capacity} kWh")
         )
         report_row = next(

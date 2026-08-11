@@ -56,6 +56,7 @@ def _root() -> None:
     milestone-3 subcommands without a breaking change.
     """
 
+
 USER_ERROR_EXIT_CODE = 2
 
 DEFAULT_TIMESTAMP_COL = "timestamp"
@@ -80,9 +81,7 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         str, typer.Option(help="Comma-separated usable capacities in kWh to sweep (0 = baseline)")
     ] = "0,5,10,15",
     # --- tariff ---
-    flat_price: Annotated[
-        float | None, typer.Option(help="Flat import price, EUR/kWh")
-    ] = None,
+    flat_price: Annotated[float | None, typer.Option(help="Flat import price, EUR/kWh")] = None,
     f1: Annotated[float | None, typer.Option(help="Italian F1 (peak) price, EUR/kWh")] = None,
     f2: Annotated[float | None, typer.Option(help="Italian F2 (mid) price, EUR/kWh")] = None,
     f3: Annotated[float | None, typer.Option(help="Italian F3 (off-peak) price, EUR/kWh")] = None,
@@ -125,15 +124,16 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     # --- output ---
     output: Annotated[
         Path | None,
-        typer.Option(help="Write the full Markdown report to this file (terminal output is "
-                          "unaffected)"),
+        typer.Option(
+            help="Write the full Markdown report to this file (terminal output is unaffected)"
+        ),
     ] = None,
     card: Annotated[
         bool,
         typer.Option(
             "--card/--no-card",
             help="Write the shareable PNG summary card alongside --output "
-                 "(same name, .png extension)",
+            "(same name, .png extension)",
         ),
     ] = True,
 ) -> None:
@@ -282,8 +282,11 @@ def _build_tariff(  # noqa: PLR0913, PLR0917 - one parameter per CLI tariff flag
 
     selected = [
         name
-        for name, used in (("--flat-price", uses_flat), ("--f1/--f2/--f3", uses_bands),
-                           ("--prices-csv", uses_csv))
+        for name, used in (
+            ("--flat-price", uses_flat),
+            ("--f1/--f2/--f3", uses_bands),
+            ("--prices-csv", uses_csv),
+        )
         if used
     ]
     if len(selected) > 1:
@@ -553,9 +556,7 @@ def _scenario_row(scenario: ScenarioResult, years: float) -> str:
         payback_text = f"{payback:.1f} y"
 
     cycles_text = "-" if scenario.capacity_kwh == 0 else f"{cycles_per_year:.0f}"
-    cost_text = (
-        "-" if scenario.battery_cost_eur is None else f"{scenario.battery_cost_eur:,.0f}"
-    )
+    cost_text = "-" if scenario.battery_cost_eur is None else f"{scenario.battery_cost_eur:,.0f}"
     self_cons = (
         f"{scenario.self_consumption_before * 100:.0f}% -> "
         f"{scenario.self_consumption_after * 100:.0f}%"

@@ -48,9 +48,7 @@ def half_hour_columns(df: pd.DataFrame) -> list[str]:
     """Return the 48 time columns, in file order."""
     cols = [c for c in df.columns if ":" in str(c)]
     if len(cols) != HALF_HOURS_PER_DAY:
-        msg = (
-            f"Expected {HALF_HOURS_PER_DAY} half-hourly columns, found {len(cols)}: {cols[:5]}..."
-        )
+        msg = f"Expected {HALF_HOURS_PER_DAY} half-hourly columns, found {len(cols)}: {cols[:5]}..."
         raise SystemExit(msg)
     return cols
 

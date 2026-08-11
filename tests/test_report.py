@@ -92,10 +92,10 @@ def test_a_full_year_annualizes_to_itself() -> None:
 
     markdown = render_report(ausgrid_totals_result(), FLAT_TARIFF)
 
-    assert f"{AUSGRID_PV_KWH:,.0f} kWh/yr" in markdown        # 5,115 — not 5,119
+    assert f"{AUSGRID_PV_KWH:,.0f} kWh/yr" in markdown  # 5,115 — not 5,119
     assert f"{AUSGRID_CONSUMPTION_KWH:,.0f} kWh/yr" in markdown
-    assert f"{AUSGRID_IMPORT_KWH:,.0f} kWh/yr" in markdown    # 6,365 — not 6,370
-    assert f"{AUSGRID_EXPORT_KWH:,.0f} kWh/yr" in markdown    # 3,801 — not 3,804
+    assert f"{AUSGRID_IMPORT_KWH:,.0f} kWh/yr" in markdown  # 6,365 — not 6,370
+    assert f"{AUSGRID_EXPORT_KWH:,.0f} kWh/yr" in markdown  # 3,801 — not 3,804
 
     # The pre-fix Julian figures must not appear anywhere in the report.
     for wrong in ("5,119", "6,370", "3,804"):
@@ -128,8 +128,12 @@ def test_partial_periods_still_scale_up_to_a_year() -> None:
 
     df = make_solar_days(n_days=60)
     result = run_analysis(
-        df, make_report(days=60), capacities=[10], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        df,
+        make_report(days=60),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     markdown = render_report(result, FLAT_TARIFF)
     scenario = result.scenarios[0]
@@ -149,8 +153,12 @@ def test_limits_section_is_present_even_when_the_verdict_is_great() -> None:
     """Limits & assumptions is unconditional: a report that drops its caveats when
     the numbers look good is exactly the failure mode this tool exists to avoid."""
     cheap_battery = run_analysis(
-        make_year(), make_report(), capacities=[10], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=1.0,
+        make_year(),
+        make_report(),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=1.0,
     )
     markdown = render_report(cheap_battery, FLAT_TARIFF)
 
@@ -185,8 +193,12 @@ def test_partial_year_triggers_the_seasonality_caveat_in_both_places() -> None:
     """A short period must warn in the Verdict AND qualify the period line in Limits."""
     df = make_solar_days(n_days=60)
     result = run_analysis(
-        df, make_report(days=60), capacities=[10], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        df,
+        make_report(days=60),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     markdown = render_report(result, FLAT_TARIFF)
 
@@ -207,9 +219,7 @@ def test_scenario_table_has_one_row_per_capacity() -> None:
 def test_baseline_row_shows_no_payback_and_no_cycles() -> None:
     """A '0.0 y' payback on the do-nothing row would be the worst number in the report."""
     markdown = render_report(build_result(), FLAT_TARIFF)
-    baseline_row = next(
-        line for line in markdown.splitlines() if line.startswith("| baseline |")
-    )
+    baseline_row = next(line for line in markdown.splitlines() if line.startswith("| baseline |"))
     assert "0.0 y" not in baseline_row
     assert baseline_row.count("—") >= 2  # payback and cycles both dashed
 
@@ -252,8 +262,12 @@ def test_seasonal_section_describes_the_capacity_the_verdict_recommends() -> Non
     20 kWh unit's 94-100% self-consumption, which a skimming reader takes as theirs.
     """
     result = run_analysis(
-        make_year(), make_report(), capacities=[0, 5, 10, 20], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        make_year(),
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     recommended = recommended_scenario(result.scenarios)
     assert recommended is not None
@@ -274,8 +288,12 @@ def test_seasonal_section_describes_the_capacity_the_verdict_recommends() -> Non
 def test_seasonal_section_keeps_the_ceiling_as_one_sentence() -> None:
     """The ceiling survives the demotion — as a computed figure, never hardcoded."""
     result = run_analysis(
-        make_year(), make_report(), capacities=[0, 5, 10, 20], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        make_year(),
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     assert result.seasonal is not None
     markdown = render_report(result, FLAT_TARIFF)
@@ -296,7 +314,10 @@ def test_seasonal_section_keeps_the_ceiling_as_one_sentence() -> None:
 def test_seasonal_ceiling_sentence_is_dropped_when_it_adds_nothing() -> None:
     """When the recommendation *is* the largest, the sentence would restate the table."""
     result = run_analysis(
-        make_year(), make_report(), capacities=[0, 10], battery_template=TEMPLATE,
+        make_year(),
+        make_report(),
+        capacities=[0, 10],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     assert result.seasonal is not None
@@ -309,8 +330,12 @@ def test_seasonal_ceiling_sentence_is_dropped_when_it_adds_nothing() -> None:
 def test_seasonal_note_names_the_recommended_capacity() -> None:
     """Best/worst month sentences inherited the old mismatch; they must not now."""
     result = run_analysis(
-        make_year(), make_report(), capacities=[0, 5, 10, 20], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        make_year(),
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     assert result.seasonal is not None
     markdown = render_report(result, FLAT_TARIFF)
@@ -323,7 +348,10 @@ def test_seasonal_note_names_the_recommended_capacity() -> None:
 def test_seasonal_section_omitted_when_there_is_nothing_to_show() -> None:
     """Baseline-only sweep: no battery, so no seasonal story and no empty table."""
     result = run_analysis(
-        make_year(), make_report(), capacities=[0], battery_template=TEMPLATE,
+        make_year(),
+        make_report(),
+        capacities=[0],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     markdown = render_report(result, FLAT_TARIFF)
@@ -343,8 +371,12 @@ def test_verdict_names_the_shortest_payback_not_the_largest_battery() -> None:
 def test_verdict_handles_a_battery_that_never_pays_off() -> None:
     """An absurd battery cost must produce an honest verdict, not a blank or a crash."""
     result = run_analysis(
-        make_year(), make_report(), capacities=[10], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=10_000_000.0,
+        make_year(),
+        make_report(),
+        capacities=[10],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=10_000_000.0,
     )
     markdown = render_report(result, FLAT_TARIFF)
 
@@ -354,7 +386,10 @@ def test_verdict_handles_a_battery_that_never_pays_off() -> None:
 
 def test_verdict_without_a_battery_cost_asks_for_one() -> None:
     result = run_analysis(
-        make_year(), make_report(), capacities=[10], battery_template=TEMPLATE,
+        make_year(),
+        make_report(),
+        capacities=[10],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     markdown = render_report(result, FLAT_TARIFF)
@@ -378,7 +413,10 @@ def test_no_warnings_section_when_there_are_none() -> None:
 
 def test_tariff_description_reaches_the_report() -> None:
     banded = Tariff(
-        kind=TariffKind.F1_F2_F3, f1_price=0.35, f2_price=0.30, f3_price=0.25,
+        kind=TariffKind.F1_F2_F3,
+        f1_price=0.35,
+        f2_price=0.30,
+        f3_price=0.25,
         export_price_eur_kwh=0.10,
     )
     result = run_analysis(
@@ -421,8 +459,12 @@ def test_render_is_deterministic() -> None:
 @pytest.mark.parametrize("capacities", [[10], [0, 10], [0, 5, 10, 15, 20]])
 def test_renders_for_any_sweep_shape(capacities: list[float]) -> None:
     result = run_analysis(
-        make_year(), make_report(), capacities=capacities, battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        make_year(),
+        make_report(),
+        capacities=capacities,
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     markdown = render_report(result, FLAT_TARIFF)
     assert "## Verdict" in markdown

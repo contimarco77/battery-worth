@@ -245,9 +245,7 @@ def build_summary_card(
         return _build(result, tariff, repo_url)
 
 
-def _build(
-    result: AnalysisResult, tariff: Tariff | None, repo_url: str
-) -> Figure:
+def _build(result: AnalysisResult, tariff: Tariff | None, repo_url: str) -> Figure:
     figure = Figure(figsize=(_FIG_INCHES, _FIG_INCHES), dpi=_DPI, facecolor=_SURFACE)
     # An explicit Agg canvas, rather than going through pyplot: the figure is
     # never shown, and pyplot's global registry would hold every card a
@@ -403,15 +401,26 @@ def _draw_headline(figure: Figure, scenarios: list[ScenarioResult], top: float) 
     headline = headline_for(scenarios)
 
     figure.text(
-        _MARGIN, top, kicker,
-        fontfamily=_FONT, fontsize=_SIZE_KICKER, color=_INK_MUTED,
-        va="top", ha="left",
+        _MARGIN,
+        top,
+        kicker,
+        fontfamily=_FONT,
+        fontsize=_SIZE_KICKER,
+        color=_INK_MUTED,
+        va="top",
+        ha="left",
     )
     size = _fit_headline_size(figure, headline)
     figure.text(
-        _MARGIN, top - 0.042, headline,
-        fontfamily=_FONT, fontsize=size, fontweight="bold", color=_INK,
-        va="top", ha="left",
+        _MARGIN,
+        top - 0.042,
+        headline,
+        fontfamily=_FONT,
+        fontsize=size,
+        fontweight="bold",
+        color=_INK,
+        va="top",
+        ha="left",
     )
     return top - 0.042 - _headline_height(size)
 
@@ -433,9 +442,7 @@ def _fit_headline_size(figure: Figure, headline: str) -> int:
     renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
     limit = _WIDTH * CARD_PX
     for size in range(_SIZE_HEADLINE_MAX, _SIZE_HEADLINE_MIN - 1, -2):
-        probe = figure.text(
-            0, 0, headline, fontfamily=_FONT, fontsize=size, fontweight="bold"
-        )
+        probe = figure.text(0, 0, headline, fontfamily=_FONT, fontsize=size, fontweight="bold")
         width = probe.get_window_extent(renderer=renderer).width
         probe.remove()
         if width <= limit:
@@ -486,10 +493,14 @@ def _draw_stats(
     """
     if best is None:
         figure.text(
-            _MARGIN, top - 0.01,
+            _MARGIN,
+            top - 0.01,
             "No capacity in this sweep saved money against the current tariff.",
-            fontfamily=_FONT, fontsize=_SIZE_STAT_LABEL + 3, color=_INK_SECONDARY,
-            va="top", ha="left",
+            fontfamily=_FONT,
+            fontsize=_SIZE_STAT_LABEL + 3,
+            color=_INK_SECONDARY,
+            va="top",
+            ha="left",
         )
         return top - 0.075
 
@@ -505,7 +516,8 @@ def _draw_stats(
         stats: list[tuple[str, str]] = [saturation]
     else:
         savings_label = (
-            "saved per year" if best.battery_cost_eur is not None
+            "saved per year"
+            if best.battery_cost_eur is not None
             else f"saved per year at {_capacity_label(best.capacity_kwh)}"
         )
         stats = [(f"{best.annual_savings_eur:,.0f} EUR", savings_label)]
@@ -517,14 +529,25 @@ def _draw_stats(
     for column, (value, label) in enumerate(stats):
         x = _MARGIN + column * 0.30
         figure.text(
-            x, baseline, value,
-            fontfamily=_FONT, fontsize=_SIZE_STAT_VALUE, fontweight="bold",
-            color=_INK, va="top", ha="left",
+            x,
+            baseline,
+            value,
+            fontfamily=_FONT,
+            fontsize=_SIZE_STAT_VALUE,
+            fontweight="bold",
+            color=_INK,
+            va="top",
+            ha="left",
         )
         figure.text(
-            x, baseline - 0.041, label,
-            fontfamily=_FONT, fontsize=_SIZE_STAT_LABEL, color=_INK_MUTED,
-            va="top", ha="left",
+            x,
+            baseline - 0.041,
+            label,
+            fontfamily=_FONT,
+            fontsize=_SIZE_STAT_LABEL,
+            color=_INK_MUTED,
+            va="top",
+            ha="left",
         )
     return baseline - 0.041 - _BAND_GAP
 
@@ -557,19 +580,29 @@ def _draw_warning(figure: Figure, result: AnalysisResult, top: float) -> float:
 
     height = 0.052
     band_top = top - 0.004
-    figure.patches.extend([
-        Rectangle(
-            (_MARGIN, band_top - height), _WIDTH, height,
-            transform=figure.transFigure, facecolor=_WARNING_BG, edgecolor="none",
-            zorder=0,
-        )
-    ])
+    figure.patches.extend(
+        [
+            Rectangle(
+                (_MARGIN, band_top - height),
+                _WIDTH,
+                height,
+                transform=figure.transFigure,
+                facecolor=_WARNING_BG,
+                edgecolor="none",
+                zorder=0,
+            )
+        ]
+    )
     figure.text(
-        _MARGIN + 0.018, band_top - height / 2,
+        _MARGIN + 0.018,
+        band_top - height / 2,
         f"Only {result.days_analyzed} days of data — not a full year. "
         "Seasonality is not captured; treat these figures as indicative.",
-        fontfamily=_FONT, fontsize=_SIZE_WARNING, color=_WARNING_INK,
-        va="center", ha="left",
+        fontfamily=_FONT,
+        fontsize=_SIZE_WARNING,
+        color=_WARNING_INK,
+        va="center",
+        ha="left",
     )
     return band_top - height - _BAND_GAP
 
@@ -625,9 +658,7 @@ def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coord
     reserved = _STATEMENT_BAND if mode == "sentence" else 0.0
     panel_height = (available - gap - reserved) / panels
 
-    savings_axes = figure.add_axes((
-        _PLOT_LEFT, top - panel_height, _PLOT_WIDTH, panel_height
-    ))
+    savings_axes = figure.add_axes((_PLOT_LEFT, top - panel_height, _PLOT_WIDTH, panel_height))
     _draw_savings_panel(savings_axes, scenarios, label_x=mode != "bars")
 
     if mode == "bars":
@@ -685,14 +716,25 @@ def _draw_no_payback_statement(
     # Anchored to the top of its reserved band and drawn downwards, so the heading
     # sits clear of the savings panel's x-axis labels above it.
     figure.text(
-        _MARGIN, band_top, "Years to pay back",
-        fontfamily=_FONT, fontsize=_SIZE_CHART_TITLE, fontweight="bold",
-        color=_INK_SECONDARY, va="top", ha="left",
+        _MARGIN,
+        band_top,
+        "Years to pay back",
+        fontfamily=_FONT,
+        fontsize=_SIZE_CHART_TITLE,
+        fontweight="bold",
+        color=_INK_SECONDARY,
+        va="top",
+        ha="left",
     )
     figure.text(
-        _MARGIN, band_top - 0.038, statement,
-        fontfamily=_FONT, fontsize=_SIZE_STAT_LABEL + 2, color=_INK,
-        va="top", ha="left",
+        _MARGIN,
+        band_top - 0.038,
+        statement,
+        fontfamily=_FONT,
+        fontsize=_SIZE_STAT_LABEL + 2,
+        color=_INK,
+        va="top",
+        ha="left",
     )
 
 
@@ -709,8 +751,13 @@ def _style_panel(axes: Axes, title: str) -> None:
     # titles follow it would break the one vertical line the eye tracks down the
     # whole card.
     axes.set_title(
-        title, fontfamily=_FONT, fontsize=_SIZE_CHART_TITLE, fontweight="bold",
-        color=_INK_SECONDARY, loc="left", pad=10,
+        title,
+        fontfamily=_FONT,
+        fontsize=_SIZE_CHART_TITLE,
+        fontweight="bold",
+        color=_INK_SECONDARY,
+        loc="left",
+        pad=10,
         x=(_MARGIN - _PLOT_LEFT) / _PLOT_WIDTH,
     )
     axes.grid(axis="y", color=_GRID, linewidth=1.0, linestyle="-")
@@ -719,17 +766,13 @@ def _style_panel(axes: Axes, title: str) -> None:
         axes.spines[side].set_visible(False)
     axes.spines["bottom"].set_color(_RULE)
     axes.spines["bottom"].set_linewidth(1.0)
-    axes.tick_params(
-        axis="both", length=0, labelsize=_SIZE_AXIS, colors=_INK_MUTED, pad=6
-    )
+    axes.tick_params(axis="both", length=0, labelsize=_SIZE_AXIS, colors=_INK_MUTED, pad=6)
     # Tick label fonts come from the rc context (`_RC`), not from a loop over the
     # current artists: matplotlib regenerates them on every locator pass, so
     # anything stamped here is discarded before the figure is drawn.
 
 
-def _draw_savings_panel(
-    axes: Axes, scenarios: list[ScenarioResult], label_x: bool
-) -> None:
+def _draw_savings_panel(axes: Axes, scenarios: list[ScenarioResult], label_x: bool) -> None:
     """Upper panel: annual savings per capacity. Taller is better, and it saturates."""
     _style_panel(axes, "Savings per year")
 
@@ -747,8 +790,11 @@ def _draw_savings_panel(
     # the direction from the axis alone, and the axis is the slowest thing on the
     # panel to read. Below zero the bars turn red; the emphasis rule is unchanged.
     bars = axes.bar(
-        positions, values, width=_bar_width(len(scenarios)),
-        color=[_LOSS if v < 0 else _SAVINGS for v in values], edgecolor="none",
+        positions,
+        values,
+        width=_bar_width(len(scenarios)),
+        color=[_LOSS if v < 0 else _SAVINGS for v in values],
+        edgecolor="none",
     )
     # With nothing recommended there is no bar for the others to recede *behind*,
     # and the right answer differs by case rather than being one rule.
@@ -763,9 +809,7 @@ def _draw_savings_panel(
     # and starts competing with it. The series stays receded.
     losing = any(v < 0 for v in values)
     for bar, scenario in zip(bars, scenarios, strict=True):
-        emphasized = (
-            losing if best is None else scenario.capacity_kwh == best.capacity_kwh
-        )
+        emphasized = losing if best is None else scenario.capacity_kwh == best.capacity_kwh
         bar.set_alpha(1.0 if emphasized else 0.32)
 
     axes.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
@@ -789,10 +833,13 @@ def _draw_savings_panel(
         offset = -_LABEL_GAP_PT if below else _LABEL_GAP_PT
         axes.annotate(
             f"{value:,.0f} EUR",
-            xy=(position, value), xytext=(0, offset),
+            xy=(position, value),
+            xytext=(0, offset),
             textcoords="offset points",
-            ha="center", va="top" if below else "bottom",
-            fontfamily=_FONT, fontsize=_SIZE_AXIS + 1,
+            ha="center",
+            va="top" if below else "bottom",
+            fontfamily=_FONT,
+            fontsize=_SIZE_AXIS + 1,
             fontweight="bold" if emphasized else "normal",
             color=_INK if emphasized else _INK_SECONDARY,
         )
@@ -825,8 +872,11 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
     drawn = [min(p, cap) if p is not None else 0.0 for p in paybacks]
 
     bars = axes.bar(
-        positions, drawn, width=_bar_width(len(scenarios)),
-        color=_PAYBACK, edgecolor="none",
+        positions,
+        drawn,
+        width=_bar_width(len(scenarios)),
+        color=_PAYBACK,
+        edgecolor="none",
     )
     for bar, scenario in zip(bars, scenarios, strict=True):
         emphasized = best is not None and scenario.capacity_kwh == best.capacity_kwh
@@ -834,9 +884,7 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
 
     _mark_clipped_bars(axes, bars, paybacks, cap)
 
-    axes.set_ylabel(
-        "years", fontfamily=_FONT, fontsize=_SIZE_AXIS, color=_INK_MUTED, labelpad=8
-    )
+    axes.set_ylabel("years", fontfamily=_FONT, fontsize=_SIZE_AXIS, color=_INK_MUTED, labelpad=8)
     _set_capacity_ticks(axes, scenarios, visible=True)
 
     # Every bar states its own figure, for the same reason as the savings panel:
@@ -854,9 +902,13 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
         axes.annotate(
             text,
             # Clipped bars carry a stub above the cap; the label clears it.
-            xy=(position, y), xytext=(0, _LABEL_GAP_PT * (2 if clipped else 1)),
+            xy=(position, y),
+            xytext=(0, _LABEL_GAP_PT * (2 if clipped else 1)),
             textcoords="offset points",
-            ha="center", va="bottom", fontfamily=_FONT, fontsize=_SIZE_AXIS + 1,
+            ha="center",
+            va="bottom",
+            fontfamily=_FONT,
+            fontsize=_SIZE_AXIS + 1,
             fontweight="bold" if emphasized else "normal",
             color=_INK if emphasized else _INK_SECONDARY,
         )
@@ -917,15 +969,25 @@ def _mark_clipped_bars(
         # above it: the bar visibly does not end where it stops.
         axes.add_patch(
             Rectangle(
-                (x, cap - band * 1.6), width, band,
-                facecolor=_SURFACE, edgecolor="none", zorder=3, clip_on=False,
+                (x, cap - band * 1.6),
+                width,
+                band,
+                facecolor=_SURFACE,
+                edgecolor="none",
+                zorder=3,
+                clip_on=False,
             )
         )
         axes.add_patch(
             Rectangle(
-                (x, cap - band * 0.6), width, band * 1.4,
-                facecolor=bar.get_facecolor(), alpha=bar.get_alpha(),
-                edgecolor="none", zorder=2, clip_on=False,
+                (x, cap - band * 0.6),
+                width,
+                band * 1.4,
+                facecolor=bar.get_facecolor(),
+                alpha=bar.get_alpha(),
+                edgecolor="none",
+                zorder=2,
+                clip_on=False,
             )
         )
 
@@ -957,9 +1019,7 @@ def _bar_width(count: int) -> float:
     return 0.46 if count > 1 else 0.34
 
 
-def _set_capacity_ticks(
-    axes: Axes, scenarios: list[ScenarioResult], visible: bool
-) -> None:
+def _set_capacity_ticks(axes: Axes, scenarios: list[ScenarioResult], visible: bool) -> None:
     """Capacity labels on the x-axis, shown only on the bottom panel of the pair.
 
     Repeating identical tick labels on both panels would restate the shared axis
@@ -983,8 +1043,11 @@ def _set_capacity_ticks(
         return
     axes.set_xticklabels([_capacity_label(s.capacity_kwh) for s in scenarios])
     axes.set_xlabel(
-        "Usable battery capacity", fontfamily=_FONT, fontsize=_SIZE_AXIS,
-        color=_INK_MUTED, labelpad=8,
+        "Usable battery capacity",
+        fontfamily=_FONT,
+        fontsize=_SIZE_AXIS,
+        color=_INK_MUTED,
+        labelpad=8,
     )
 
 
@@ -1115,8 +1178,11 @@ def _draw_footer(
     """
     figure.add_artist(
         Line2D(
-            [_MARGIN, 1 - _MARGIN], [0.106, 0.106],
-            transform=figure.transFigure, color=_RULE, linewidth=1.0,
+            [_MARGIN, 1 - _MARGIN],
+            [0.106, 0.106],
+            transform=figure.transFigure,
+            color=_RULE,
+            linewidth=1.0,
         )
     )
 
@@ -1128,25 +1194,46 @@ def _draw_footer(
         period += f"  ·  {describe_tariff(tariff)}"
 
     figure.text(
-        _MARGIN, 0.084, period,
-        fontfamily=_FONT, fontsize=_SIZE_FOOTER, color=_INK_SECONDARY,
-        va="top", ha="left",
+        _MARGIN,
+        0.084,
+        period,
+        fontfamily=_FONT,
+        fontsize=_SIZE_FOOTER,
+        color=_INK_SECONDARY,
+        va="top",
+        ha="left",
     )
     figure.text(
-        _MARGIN, 0.056, "Retrospective analysis of real metered data. "
+        _MARGIN,
+        0.056,
+        "Retrospective analysis of real metered data. "
         "No degradation, no price inflation, no incentives.",
-        fontfamily=_FONT, fontsize=_SIZE_FOOTER, color=_INK_MUTED,
-        va="top", ha="left",
+        fontfamily=_FONT,
+        fontsize=_SIZE_FOOTER,
+        color=_INK_MUTED,
+        va="top",
+        ha="left",
     )
     figure.text(
-        _MARGIN, 0.024, _BRAND,
-        fontfamily=_FONT, fontsize=_SIZE_BRAND, fontweight="bold", color=_INK,
-        va="baseline", ha="left",
+        _MARGIN,
+        0.024,
+        _BRAND,
+        fontfamily=_FONT,
+        fontsize=_SIZE_BRAND,
+        fontweight="bold",
+        color=_INK,
+        va="baseline",
+        ha="left",
     )
     figure.text(
-        1 - _MARGIN, 0.024, repo_url,
-        fontfamily=_FONT, fontsize=_SIZE_FOOTER, color=_INK_MUTED,
-        va="baseline", ha="right",
+        1 - _MARGIN,
+        0.024,
+        repo_url,
+        fontfamily=_FONT,
+        fontsize=_SIZE_FOOTER,
+        color=_INK_MUTED,
+        va="baseline",
+        ha="right",
     )
 
 

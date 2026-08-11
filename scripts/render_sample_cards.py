@@ -60,9 +60,7 @@ TARIFF = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.25, export_price_eur_
 # Export paid better than the grid charged: the battery diverts energy away from a
 # feed-in tariff worth more than the import it avoids, so savings go negative at
 # every capacity. Rare, real, and the case the card must not dress up.
-LOSING_TARIFF = Tariff(
-    kind=TariffKind.FLAT, flat_price_eur_kwh=0.05, export_price_eur_kwh=0.40
-)
+LOSING_TARIFF = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.05, export_price_eur_kwh=0.40)
 TEMPLATE = BatterySpec(usable_capacity_kwh=1.0, max_charge_kw=5.0, max_discharge_kw=5.0)
 
 SHORT_PERIOD_DAYS = 60
@@ -93,9 +91,7 @@ def main() -> int:
 
     if not args.fixture.exists():
         print(f"Fixture not found: {args.fixture}", file=sys.stderr)
-        print(
-            "See PROJECT-CONTEXT.md § Test fixture, or pass --fixture.", file=sys.stderr
-        )
+        print("See PROJECT-CONTEXT.md § Test fixture, or pass --fixture.", file=sys.stderr)
         return 1
 
     output: Path = args.output.resolve()

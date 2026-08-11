@@ -68,20 +68,23 @@ def render_report(
     best = recommended_scenario(result.scenarios)
     reference = best if best is not None else _largest_scenario(result.scenarios)
 
-    return template.render(
-        r=result,
-        years=years,
-        best=best,
-        totals=_totals(reference),
-        sensitivity=result.export_sensitivity,
-        seasonal=result.seasonal,
-        seasonal_note=_seasonal_note(result),
-        has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
-        tariff_description=describe_tariff(tariff),
-        warnings=warnings or [],
-        project_name=PROJECT_NAME,
-        repo_url=REPO_URL,
-    ).strip() + "\n"
+    return (
+        template.render(
+            r=result,
+            years=years,
+            best=best,
+            totals=_totals(reference),
+            sensitivity=result.export_sensitivity,
+            seasonal=result.seasonal,
+            seasonal_note=_seasonal_note(result),
+            has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
+            tariff_description=describe_tariff(tariff),
+            warnings=warnings or [],
+            project_name=PROJECT_NAME,
+            repo_url=REPO_URL,
+        ).strip()
+        + "\n"
+    )
 
 
 def write_report(

@@ -188,8 +188,11 @@ def test_template_capacity_is_ignored_but_other_params_are_kept() -> None:
     """The sweep overrides capacity only; power/efficiency/min_soc come from the template."""
     df = make_solar_days()
     template = BatterySpec(
-        usable_capacity_kwh=999.0, max_charge_kw=1.0, max_discharge_kw=1.0,
-        round_trip_efficiency=0.81, min_soc=0.1,
+        usable_capacity_kwh=999.0,
+        max_charge_kw=1.0,
+        max_discharge_kw=1.0,
+        round_trip_efficiency=0.81,
+        min_soc=0.1,
     )
     result = run_analysis(
         df, make_report(), capacities=[10], battery_template=template, tariff=FLAT_TARIFF
@@ -269,7 +272,10 @@ def test_monotonicity_holds_under_f123_bands() -> None:
     """Monotonicity is a property of the strategy, not of the flat tariff: check it on bands too."""
     df = make_solar_days()
     banded = Tariff(
-        kind=TariffKind.F1_F2_F3, f1_price=0.35, f2_price=0.30, f3_price=0.25,
+        kind=TariffKind.F1_F2_F3,
+        f1_price=0.35,
+        f2_price=0.30,
+        f3_price=0.25,
         export_price_eur_kwh=0.10,
     )
     result = run_analysis(

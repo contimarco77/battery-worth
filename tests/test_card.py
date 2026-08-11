@@ -47,9 +47,7 @@ from tests.test_analysis import FLAT_TARIFF, TEMPLATE, make_report, make_solar_d
 # An export price above the import price: the battery diverts energy away from a
 # feed-in tariff that paid better than the grid charged, so savings go negative at
 # every capacity. Rare, real, and the one case the card must not dress up.
-LOSING_TARIFF = Tariff(
-    kind=TariffKind.FLAT, flat_price_eur_kwh=0.05, export_price_eur_kwh=0.40
-)
+LOSING_TARIFF = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.05, export_price_eur_kwh=0.40)
 
 
 # 150 EUR/kWh on this synthetic household puts paybacks in the 12-13 year range —
@@ -145,7 +143,7 @@ def test_headline_names_the_fastest_payback_as_an_investment_claim() -> None:
 
 
 def test_headline_never_claims_a_capacity_is_sufficient() -> None:
-    """"Pays back fastest" is not "is enough" — the card must not upgrade the claim.
+    """ "Pays back fastest" is not "is enough" — the card must not upgrade the claim.
 
     The fastest-payback capacity is routinely the *smallest* one, leaving most of
     the PV surplus unused: on the fixture 5 kWh reaches 59% self-consumption where
@@ -265,7 +263,7 @@ def test_no_cost_stat_supports_the_flattening_headline() -> None:
 
 
 def test_a_fully_saturated_sweep_says_so_instead_of_printing_zero() -> None:
-    """"+0 EUR" in the card's second-largest text reads as a failure to compute.
+    """ "+0 EUR" in the card's second-largest text reads as a failure to compute.
 
     It is the strongest form of the headline — the extra capacity bought literally
     nothing — and a bare zero is the weakest way to say it. Saturation gets words
@@ -490,18 +488,13 @@ def axis_overruns(figure: Figure) -> list[str]:
             for bar in bars_of(axes)
         ]
         artists += [
-            (f"label {text.get_text()!r}", text.get_window_extent(renderer))
-            for text in axes.texts
+            (f"label {text.get_text()!r}", text.get_window_extent(renderer)) for text in axes.texts
         ]
         for name, extent in artists:
             if extent.y1 > box.y1:
-                faults.append(
-                    f"{panel}: {name} overruns the top by {extent.y1 - box.y1:.1f}px"
-                )
+                faults.append(f"{panel}: {name} overruns the top by {extent.y1 - box.y1:.1f}px")
             if extent.y0 < box.y0:
-                faults.append(
-                    f"{panel}: {name} underruns the bottom by {box.y0 - extent.y0:.1f}px"
-                )
+                faults.append(f"{panel}: {name} underruns the bottom by {box.y0 - extent.y0:.1f}px")
     return faults
 
 
@@ -561,9 +554,7 @@ def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
     targets = {5.0: 199.0, 10.0: 288.0, 15.0: 303.0}
     pinned = [
         s.model_copy(
-            update={
-                "simulated_cost_eur": s.baseline_cost_eur - targets[s.capacity_kwh] * years
-            }
+            update={"simulated_cost_eur": s.baseline_cost_eur - targets[s.capacity_kwh] * years}
         )
         if s.capacity_kwh in targets
         else s
@@ -919,7 +910,7 @@ def test_paybacks_beyond_a_battery_lifetime_become_a_sentence_not_bars() -> None
 
 
 def test_the_replacement_sentence_names_the_capacity_that_achieves_it() -> None:
-    """"No capacity pays back" without a number reads as a failure to compute."""
+    """ "No capacity pays back" without a number reads as a failure to compute."""
     result = build(days=60, cost_per_kwh=6000.0)
     statement = no_payback_statement(result.scenarios)
     assert statement is not None

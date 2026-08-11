@@ -79,8 +79,12 @@ def test_reference_capacity_is_the_recommended_one() -> None:
     """
     df = make_year()
     result = run_analysis(
-        df, make_report(), capacities=[0, 5, 10, 20], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        df,
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     seasonal = result.seasonal
     assert seasonal is not None
@@ -96,8 +100,12 @@ def test_ceiling_is_carried_alongside_the_recommended_capacity() -> None:
     """The largest capacity's unused surplus survives as a figure, not as the framing."""
     df = make_year()
     result = run_analysis(
-        df, make_report(), capacities=[0, 5, 10, 20], battery_template=TEMPLATE,
-        tariff=FLAT_TARIFF, battery_cost_per_kwh=600.0,
+        df,
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
     )
     seasonal = result.seasonal
     assert seasonal is not None
@@ -117,7 +125,10 @@ def test_ceiling_flag_is_set_when_the_recommendation_is_the_largest() -> None:
     """Nothing to add when the recommended battery *is* the biggest one swept."""
     df = make_year()
     result = run_analysis(
-        df, make_report(), capacities=[0, 10], battery_template=TEMPLATE,
+        df,
+        make_report(),
+        capacities=[0, 10],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     seasonal = result.seasonal
@@ -133,11 +144,12 @@ def test_ceiling_flag_is_set_when_the_recommendation_is_the_largest() -> None:
 def test_falls_back_to_the_largest_when_nothing_is_recommended() -> None:
     """No cost and no positive savings means no recommendation; still show a real battery."""
     df = make_year()
-    free_export = Tariff(
-        kind=TariffKind.FLAT, flat_price_eur_kwh=0.25, export_price_eur_kwh=0.25
-    )
+    free_export = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.25, export_price_eur_kwh=0.25)
     result = run_analysis(
-        df, make_report(), capacities=[0, 5, 10], battery_template=TEMPLATE,
+        df,
+        make_report(),
+        capacities=[0, 5, 10],
+        battery_template=TEMPLATE,
         tariff=free_export,
     )
     seasonal = result.seasonal
@@ -164,7 +176,10 @@ def test_short_period_falls_back_to_seasons() -> None:
     """Three months of data as three monthly rows reads as noise; bucket it coarsely."""
     df = make_solar_days(n_days=60)
     result = run_analysis(
-        df, make_report(days=60), capacities=[10], battery_template=TEMPLATE,
+        df,
+        make_report(days=60),
+        capacities=[10],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     seasonal = result.seasonal
@@ -184,7 +199,10 @@ def test_buckets_are_chronologically_ordered_across_a_year_boundary() -> None:
         index=idx,
     )
     result = run_analysis(
-        df, make_report(days=180), capacities=[10], battery_template=TEMPLATE,
+        df,
+        make_report(days=180),
+        capacities=[10],
+        battery_template=TEMPLATE,
         tariff=FLAT_TARIFF,
     )
     seasonal = result.seasonal
@@ -251,7 +269,10 @@ def test_seasonal_savings_respect_banded_prices() -> None:
     """Bucket costing must use the same per-interval price series as the scenario total."""
     df = make_year()
     banded = Tariff(
-        kind=TariffKind.F1_F2_F3, f1_price=0.35, f2_price=0.30, f3_price=0.25,
+        kind=TariffKind.F1_F2_F3,
+        f1_price=0.35,
+        f2_price=0.30,
+        f3_price=0.25,
         export_price_eur_kwh=0.10,
     )
     result = run_analysis(
@@ -268,7 +289,9 @@ def test_seasonal_savings_respect_banded_prices() -> None:
 def test_lossy_battery_leaves_more_surplus_unused() -> None:
     df = make_year()
     lossy = BatterySpec(
-        usable_capacity_kwh=1.0, max_charge_kw=5.0, max_discharge_kw=5.0,
+        usable_capacity_kwh=1.0,
+        max_charge_kw=5.0,
+        max_discharge_kw=5.0,
         round_trip_efficiency=0.64,
     )
     lossless = run_analysis(

@@ -224,9 +224,7 @@ def build_export_sensitivity(
     )
 
 
-def _resolve_export_prices(
-    requested: list[float] | None, configured: float
-) -> list[float]:
+def _resolve_export_prices(requested: list[float] | None, configured: float) -> list[float]:
     """Pick the price points: the user's list, or three bracketing the configured price.
 
     The default deliberately includes the configured price itself, so the grid
@@ -353,9 +351,7 @@ def _bucket_keys(index: pd.DatetimeIndex, granularity: str) -> tuple[pd.Index, p
     return quarter, pd.Index([names[q] for q in quarter])
 
 
-def _seasonal_bucket(
-    group: pd.DataFrame, sort_key: int, export_price: float
-) -> SeasonalBucket:
+def _seasonal_bucket(group: pd.DataFrame, sort_key: int, export_price: float) -> SeasonalBucket:
     """Aggregate one bucket, costing it exactly as `summarize_scenario` costs the whole period."""
     pv = float(group["pv_production"].sum())
     baseline_import = float(group["grid_import"].sum())
