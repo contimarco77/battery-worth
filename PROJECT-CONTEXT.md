@@ -50,6 +50,44 @@ inbound senior-rate consulting. No active selling.
 - **Stack**: Python 3.11, pandas, pydantic v2, typer, jinja2, matplotlib,
   anthropic SDK (optional extra), ruff, mypy strict.
 
+## Definition of done
+
+**No piece of work is complete until all four gates pass.** Not three of four, and
+not "the failure is preexisting and unrelated" — session (10) is the record of what
+that reasoning costs.
+
+```
+pytest
+ruff check .
+ruff format --check .
+mypy src/ --strict
+```
+
+`ruff format --check .` is the gate that was missing, and its absence is why this
+section exists. Only `ruff check` was being run, and the two are not the same tool:
+`check` is the linter (unused imports, undefined names, rule violations) and
+`format` is the formatter (line breaks, quote style, trailing commas). Nothing in
+`check` reports formatting drift, so it accumulated silently across **12 files** —
+every session added a little and every session's report said "ruff clean", which
+was true of the command actually run and false of the thing it implied.
+
+Three properties of this failure worth carrying:
+
+- **It reported success while degrading.** The gate that was never run cannot fail,
+  so the drift had no signal at all until someone ran a different command. Compare
+  session (10)'s missing `py.typed`: same shape, a checker that had quietly stopped
+  checking.
+- **It is unbounded.** Lint errors are individually visible in a diff; formatting
+  drift is invisible per-commit and only legible in aggregate, so it has no natural
+  point at which anyone notices.
+- **It taxes every future diff.** Reformatting 12 files at once produces a 519-line
+  commit that no reviewer can read, and it lands on top of real changes. Running the
+  gate per session keeps the formatting delta at zero and the diff about the work.
+
+`mypy` is run as `mypy src/ --strict` for the gate. Note that `mypy src tests` also
+passes and is worth running when touching tests — session (10) added `py.typed`
+precisely so the test suite is type-checked rather than silently degraded to `Any`.
+
 ## Milestones
 
 1. **Engine**: pydantic models, generic CSV parser, greedy vectorized simulator,
@@ -79,7 +117,8 @@ inbound senior-rate consulting. No active selling.
   - [x] PNG summary card — `card.py`, written beside `--output`, skipped with `--no-card`
 - [ ] Milestone 3
 
-**Milestone 2 is closed.** Suite: 213 tests passing, ruff clean, mypy strict clean.
+**Milestone 2 is closed.** Suite: 242 tests passing, all four gates clean
+(see "Definition of done").
 
 ## Validated invariants
 
@@ -705,3 +744,46 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   (`BatterySpec(usable_capacity_kwh="grande")` type-checks). Preexisting, out of scope
   for this fix, and worth a decision of its own — enabling it will surface real call
   sites rather than being a no-op.
+- **2026-08-11 (11)** — **Bar labels drawn outside their panel; `ruff format` added as
+  a gate.** Suite 233 → 242, all four gates clean.
+
+  *The label overrun was a unit mismatch, not tick rounding.* The 60-day card's savings
+  axis ran to 347.9 against a 303 bar — the headroom was there — yet "303 EUR" was drawn
+  3px past the top of the panel. `_pad_range` reserved headroom as a fraction of the
+  **data span** while labels are placed at a fixed 7pt offset in **screen space**, so how
+  many pixels 15% buys depends on the panel's pixel height. The seasonality band makes a
+  partial-year card's panels shorter (208px vs the fixture's 259px), which is what turned
+  a 3.5px clearance on the fixture into a 3px overrun. Fixed by measuring the rendered
+  label extent and converting to data units per panel, with the fraction kept as a floor.
+  The payback panel's `29.7` had the same defect on the same card, and the clipped-bar
+  label — which sits at double the gap to clear the break stub — needed its own allowance
+  or the fix would have reintroduced the bug on the bar most likely to hit it.
+
+  *Two reported defects turned out not to exist, and measuring first is why.* Bold vs
+  regular label offsets were reported as inconsistent; they measure identically (9.72px
+  on every ausgrid label), because DejaVu Bold and Regular share vertical metrics and
+  `va="bottom"` puts the baseline in the same place. The negative-label gridline overlap
+  was likewise absent — the nearest gridline clears each label by 13-36px on the real
+  fixture, before any change. I had already written a `_NEGATIVE_LABEL_EXTRA_PT` nudge
+  and a test for it before the measurement came back, and reverted both. **A plausible
+  mechanism stated in a bug report is a hypothesis, not a finding**; shipping the fix
+  anyway would have left an unexplained magic constant defended by a test that could
+  never fail.
+
+  *The new test measures pixels, because that is where the defect lives.* The existing
+  headroom test compares bar heights to y-limits in data units and passed throughout —
+  the bar was inside the limits while the text above it was not. `axis_overruns()` draws
+  the figure and compares every bar's and every label's rendered extent against the axes
+  box. Mutation-checked: three tests fail on the old renderer. The 303-against-300 case
+  needed the 60-day period pinned as well as the value — at 365 days it passes on the
+  broken code, since the awkward maximum alone does not reproduce it without the shorter
+  panel. **A regression test for a geometry bug has to pin the whole geometry.**
+
+  *`ruff format --check` added as the fourth gate* — see the new "Definition of done"
+  section. Formatting drift had accumulated across 12 files because only `ruff check`
+  was ever run. Applied in its own commit (`7cfad6a`, 519 lines) kept separate from the
+  card fix; verified formatting-only by comparing the AST before and after per file,
+  which is stronger than reading the diff. Five of six flagged files are AST-identical;
+  the sixth differs only in three docstrings where the formatter inserted a space after
+  the opening `"""` on strings whose text begins with a quote character (`""""Pays` →
+  `""" "Pays`), a required disambiguation that touches no assertion.
