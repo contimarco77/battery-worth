@@ -22,6 +22,7 @@ METER_MAPPING = ColumnMapping(timestamp="ts", consumption="consumption", pv_prod
 
 MIN_DAYS = 30
 QUARTER_HOUR_MINUTES = 15
+HALF_HOUR_MINUTES = 30
 HOUR_MINUTES = 60
 
 
@@ -71,6 +72,16 @@ def days_of_hourly_data(days: int) -> tuple[list[float], list[float], list[float
     imp = (day_imp * days)[: days * 24]
     exp = (day_exp * days)[: days * 24]
     pv = (day_pv * days)[: days * 24]
+    return imp, exp, pv
+
+
+def distinct_sawtooth_values(n: int) -> tuple[list[float], list[float], list[float]]:
+    """Per-row values that are distinct within each 24h block (so a dropped row changes
+    the total detectably) but reset every day, so no column ever looks monotonically
+    non-decreasing and trips the cumulative-meter detector."""
+    imp = [round(0.10 + (i % 24) * 0.001, 4) for i in range(n)]
+    exp = [round(0.20 + (i % 24) * 0.002, 4) for i in range(n)]
+    pv = [round(0.30 + (i % 24) * 0.003, 4) for i in range(n)]
     return imp, exp, pv
 
 
@@ -198,6 +209,101 @@ def test_dst_spring_missing_hour(tmp_path: Path) -> None:
     assert report.days_analyzed >= MIN_DAYS
 
 
+def test_dst_spring_conserves_energy(tmp_path: Path) -> None:
+    """Spring forward must not lose energy.
+
+    Europe/Rome 2025-03-30: local 02:00 does not exist, so nonexistent='shift_forward'
+    moves that row onto 03:00 — where a row already exists. Those are two distinct
+    intervals of real energy landing on one timestamp: they must be SUMMED. Dropping
+    the collision silently deletes an hour of readings from the totals.
+
+    Every input value is distinct and known, so total kWh in == total kWh out is
+    hand-checkable per column.
+    """
+    n = 31 * 24
+    imp, exp, pv = distinct_sawtooth_values(n)
+    ts = [t.isoformat() for t in pd.date_range("2025-03-15 00:00", periods=n, freq="h")]
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    df, _ = load_energy_data(csv, GRID_MAPPING)
+
+    assert df["grid_import"].sum() == pytest.approx(sum(imp))
+    assert df["grid_export"].sum() == pytest.approx(sum(exp))
+    assert df["pv_production"].sum() == pytest.approx(sum(pv))
+
+
+def test_dst_autumn_conserves_energy(tmp_path: Path) -> None:
+    """The autumn changeover (repeated 02:00, each pass a real interval) also conserves
+    energy: both passes are distinct readings and neither may be discarded."""
+    n = 31 * 24
+    ts = hourly_timestamps("2025-10-10 00:00", n)  # duplicates local 02:00, as HA does
+    imp, exp, pv = distinct_sawtooth_values(len(ts))
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    df, _ = load_energy_data(csv, GRID_MAPPING)
+
+    assert df["grid_import"].sum() == pytest.approx(sum(imp))
+    assert df["grid_export"].sum() == pytest.approx(sum(exp))
+    assert df["pv_production"].sum() == pytest.approx(sum(pv))
+
+
+def test_duplicate_source_rows_are_dropped_not_summed(tmp_path: Path) -> None:
+    """A genuinely repeated source row (same wall-clock timestamp exported twice, away
+    from any DST boundary) is a duplicate export of one reading, not extra energy:
+    it is dropped, so the total excludes it. This is the opposite rule from the
+    DST-shift collision above, and the two must not be conflated."""
+    n = 31 * 24
+    imp, exp, pv = days_of_hourly_data(n // 24)
+    ts = [t.isoformat() for t in pd.date_range("2025-01-01 00:00", periods=n, freq="h")]
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    duplicated_row = rows[100]
+    rows.insert(101, duplicated_row)  # exact repeat of the 100th timestamp
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    df, report = load_energy_data(csv, GRID_MAPPING)
+
+    assert df["grid_import"].sum() == pytest.approx(sum(imp))  # the repeat added nothing
+    assert any("exported twice" in w for w in report.warnings)
+
+
+def test_dst_autumn_single_occurrence_hour(tmp_path: Path) -> None:
+    """The autumn DST hour present only ONCE must not crash.
+
+    ambiguous='infer' can only resolve the repeated hour when it physically appears
+    twice (as in a Home Assistant export). Public datasets and inverter CSVs written
+    against a naive local clock contain it once; that must fall back to the first
+    (pre-changeover) pass and warn, not raise out of pandas.
+    """
+    n = 31 * 24
+    imp, exp, pv = days_of_hourly_data(n // 24)
+    # date_range gives each wall-clock hour exactly once, including the repeated 02:00.
+    ts = [t.isoformat() for t in pd.date_range("2025-10-10 00:00", periods=n, freq="h")]
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    df, report = load_energy_data(csv, GRID_MAPPING)
+
+    assert str(pd.DatetimeIndex(df.index).tz) == "Europe/Rome"
+    assert report.days_analyzed >= MIN_DAYS
+    assert any("daylight-saving" in w for w in report.warnings)
+
+
+def test_unsorted_timestamps_are_sorted_before_localizing(tmp_path: Path) -> None:
+    """Rows out of chronological order must still localize and come back ascending."""
+    n = 31 * 24
+    imp, exp, pv = days_of_hourly_data(n // 24)
+    ts = hourly_timestamps("2025-01-01 00:00", n)
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    shuffled = [rows[i] for i in (*range(10, len(rows)), *range(10))]
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], shuffled)
+
+    df, _ = load_energy_data(csv, GRID_MAPPING)
+
+    assert df.index.is_monotonic_increasing
+
+
 def test_15min_downsampling_to_hourly(tmp_path: Path) -> None:
     """Four 15-min intervals of [0.1, 0.2, 0.3, 0.4] kWh sum to 1.0 kWh for the hour.
 
@@ -216,6 +322,24 @@ def test_15min_downsampling_to_hourly(tmp_path: Path) -> None:
 
     assert report.native_resolution_minutes == QUARTER_HOUR_MINUTES
     assert df["grid_import"].iloc[0] == pytest.approx(1.0)
+    assert len(df) == 31 * 24
+
+
+def test_30min_downsampling_to_hourly(tmp_path: Path) -> None:
+    """Two 30-min intervals of [0.4, 0.6] kWh sum to 1.0 kWh for the hour."""
+    n = 31 * 24 * 2
+    imp = [0.4, 0.6] * (n // 2)
+    exp = [0.1, 0.2] * (n // 2)
+    pv = [0.0] * n
+    ts = [t.isoformat() for t in pd.date_range("2025-01-01 00:00", periods=n, freq="30min")]
+    rows = list(zip(ts, imp, exp, pv, strict=True))
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    df, report = load_energy_data(csv, GRID_MAPPING)
+
+    assert report.native_resolution_minutes == HALF_HOUR_MINUTES
+    assert df["grid_import"].iloc[0] == pytest.approx(1.0)
+    assert df["grid_export"].iloc[0] == pytest.approx(0.3)
     assert len(df) == 31 * 24
 
 

@@ -20,7 +20,9 @@ def make_df(imports: list[float], exports: list[float], pv: list[float]) -> pd.D
 
 def test_perfect_shift_lossless() -> None:
     """With 100% efficiency, 2 kWh exported at noon fully covers 2 kWh imported at night."""
-    df = make_df(imports=[0.0, 0.0, 1.0, 1.0], exports=[1.0, 1.0, 0.0, 0.0], pv=[1.0, 1.0, 0.0, 0.0])
+    df = make_df(
+        imports=[0.0, 0.0, 1.0, 1.0], exports=[1.0, 1.0, 0.0, 0.0], pv=[1.0, 1.0, 0.0, 0.0]
+    )
     spec = BatterySpec(usable_capacity_kwh=10, round_trip_efficiency=1.0)
     out = simulate_battery(df, spec)
 
@@ -58,7 +60,9 @@ def test_summary_self_consumption_and_savings() -> None:
     simulated cost = 0 import - 0 export = 0.00
     savings = 0.40 EUR. Self-consumption: before (2-2)/2 = 0%, after (2-0)/2 = 100%.
     """
-    df = make_df(imports=[0.0, 0.0, 1.0, 1.0], exports=[1.0, 1.0, 0.0, 0.0], pv=[1.0, 1.0, 0.0, 0.0])
+    df = make_df(
+        imports=[0.0, 0.0, 1.0, 1.0], exports=[1.0, 1.0, 0.0, 0.0], pv=[1.0, 1.0, 0.0, 0.0]
+    )
     spec = BatterySpec(usable_capacity_kwh=10, round_trip_efficiency=1.0)
     out = simulate_battery(df, spec)
     prices = pd.Series(0.30, index=df.index)

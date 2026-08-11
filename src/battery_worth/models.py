@@ -92,7 +92,7 @@ class BatterySpec(BaseModel):
     @property
     def one_way_efficiency(self) -> float:
         """Round-trip efficiency split evenly between charge and discharge."""
-        return self.round_trip_efficiency**0.5
+        return float(self.round_trip_efficiency**0.5)
 
 
 class TariffKind(StrEnum):

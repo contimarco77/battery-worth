@@ -24,7 +24,7 @@ app = typer.Typer(
 
 
 @app.command()
-def analyze(
+def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from these parameters
     data: Annotated[Path, typer.Argument(help="CSV with timestamp, import, export, PV columns")],
     capacities: Annotated[
         str, typer.Option(help="Comma-separated usable capacities in kWh to sweep")

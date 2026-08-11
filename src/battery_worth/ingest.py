@@ -38,9 +38,8 @@ def load_energy_data(
     """
     source_columns = _source_columns(mapping)
     raw = _read_csv(path, mapping, source_columns)
-    raw = _localize_and_sort(raw, timezone, mapping.timestamp)
+    raw, warnings = _localize_and_sort(raw, timezone, mapping.timestamp)
 
-    warnings: list[str] = []
     cumulative_columns: list[str] = []
     for col in source_columns:
         is_cumulative = _is_cumulative(raw[col]) if cumulative is None else cumulative
@@ -179,7 +178,31 @@ def _read_csv(path: Path, mapping: ColumnMapping, source_columns: list[str]) -> 
     return df
 
 
-def _localize_and_sort(df: pd.DataFrame, timezone: str, timestamp_col: str) -> pd.DataFrame:
+def _localize(index: pd.DatetimeIndex, timezone: str) -> tuple[pd.DatetimeIndex, list[str]]:
+    """Localize naive timestamps, handling both shapes of autumn DST data.
+
+    `ambiguous="infer"` resolves the repeated hour from the data itself, but it only
+    works when that hour actually appears twice (a Home Assistant export logs local
+    02:00 once per UTC offset). Many real exports — public datasets, inverter CSVs,
+    anything written against a naive local clock — contain it only once, and infer
+    then raises. Fall back to reading the repeated hour as the first (pre-changeover,
+    DST) pass, which is the correct choice for a single-occurrence series.
+    """
+    try:
+        return index.tz_localize(timezone, ambiguous="infer", nonexistent="shift_forward"), []
+    except ValueError:
+        localized = index.tz_localize(timezone, ambiguous=True, nonexistent="shift_forward")
+        return localized, [
+            "The autumn daylight-saving hour appears only once in this data, so it could "
+            "not be resolved from the timestamps themselves; it was read as the first "
+            "(pre-changeover) pass. This shifts at most one hour of energy per year and "
+            "does not meaningfully affect the results."
+        ]
+
+
+def _localize_and_sort(
+    df: pd.DataFrame, timezone: str, timestamp_col: str
+) -> tuple[pd.DataFrame, list[str]]:
     parsed = pd.to_datetime(df[timestamp_col], errors="coerce")
     if parsed.isna().any():
         n_bad = int(parsed.isna().sum())
@@ -191,17 +214,53 @@ def _localize_and_sort(df: pd.DataFrame, timezone: str, timestamp_col: str) -> p
 
     df = df.drop(columns=[timestamp_col]).set_index(parsed)
     df.index.name = "timestamp"
+    # Sort before localizing: ambiguous="infer" reads the repeated autumn hour from the
+    # order of the timestamps, so an out-of-order export must be fixed up first.
+    df = df.sort_index()
     index = pd.DatetimeIndex(df.index)
+    warnings: list[str] = []
 
     if index.tz is None:
-        localized = index.tz_localize(timezone, ambiguous="infer", nonexistent="shift_forward")
+        localized, dst_warnings = _localize(index, timezone)
+        warnings.extend(dst_warnings)
     else:
         localized = index.tz_convert(timezone)
     df.index = localized
 
     df = df.sort_index()
-    df = df[~df.index.duplicated(keep="first")]
-    return df
+
+    # Duplicate timestamps are only resolved here, AFTER localization, because the two
+    # DST cases look identical beforehand but are not:
+    #   * Autumn: the repeated wall-clock hour localizes to two DISTINCT instants
+    #     (+02:00 and +01:00), so it never reaches this point as a duplicate at all.
+    #   * Spring: nonexistent="shift_forward" moves the non-existent local hour onto the
+    #     next hour, colliding with a row that already exists. Those are two separate
+    #     intervals of real energy on one timestamp.
+    # A collision is therefore extra energy, not a redundant export, so it is SUMMED —
+    # except when the colliding rows are identical, which indicates the same reading was
+    # written to the file twice and summing it would invent energy that never flowed.
+    duplicated = pd.DatetimeIndex(df.index).duplicated()
+    if bool(duplicated.any()):
+        # Scope the value comparison to the timestamp: df.duplicated() alone ignores the
+        # index, so ordinary repeating daily patterns would look like exact repeats.
+        identical = df.reset_index().duplicated().to_numpy()
+        n_identical = int(identical.sum())
+        if n_identical > 0:
+            df = df[~identical]
+            warnings.append(
+                f"Dropped {n_identical} row(s) that repeat both the timestamp and the "
+                "values of an earlier row. Exact repeats are treated as the same reading "
+                "exported twice, not as extra energy."
+            )
+        if bool(pd.DatetimeIndex(df.index).duplicated().any()):
+            df = df.groupby(level=0).sum()
+            warnings.append(
+                "Some rows share a timestamp after conversion to local time (this happens "
+                "at the spring daylight-saving change, when the missing hour is moved "
+                "forward onto the next one). Their energy was added together so none of "
+                "it is lost."
+            )
+    return df, warnings
 
 
 def _is_cumulative(series: pd.Series) -> bool:
