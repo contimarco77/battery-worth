@@ -74,10 +74,10 @@ inbound senior-rate consulting. No active selling.
   - [x] export price sensitivity (`build_export_sensitivity`, `--export-price-sweep`)
   - [x] seasonal aggregates (`SeasonalAnalysis`, per-month or per-season)
   - [x] jinja2 report (4 sections) — `report.py` + `templates/report.md.j2`, `--output`
-  - [ ] PNG summary card
+  - [x] PNG summary card — `card.py`, written beside `--output`, skipped with `--no-card`
 - [ ] Milestone 3
 
-Suite: 171 tests passing, ruff clean, mypy strict clean.
+**Milestone 2 is closed.** Suite: 203 tests passing, ruff clean, mypy strict clean.
 
 ## Validated invariants
 
@@ -205,6 +205,75 @@ consequence of the locked "downsample to hourly" decision.
   Both annualize the same scenarios; two copies of the constant meant one run could
   print two different annual savings depending on where you read it. A CLI test renders
   both outputs from a single run and compares the figures.
+
+## Summary card (decided, with rationale)
+
+- **The headline is the recommended capacity, not the payback.** "5 kWh is enough for
+  this house" is actionable and contradicts what a salesperson told the reader; "14.2
+  years" alone is only discouraging and gets scrolled past. Savings, payback and cost
+  are a subordinate stat row underneath — they make the headline credible, they are not
+  the headline.
+- **Two stacked panels, never a dual axis.** Savings and payback are different scales,
+  and one plot with two y-axes would let the reader read a crossing point that is an
+  artifact of how the two axes happened to be aligned. That is a fabricated finding in
+  a tool whose only selling point is that its numbers are real. Stacked panels on a
+  shared capacity axis tell the same story — savings rise and flatten, payback climbs
+  away — off two shapes rather than one invented intersection.
+- **Emphasis, not a second hue.** One colour per panel; the recommended bar at full
+  strength, the rest at 0.32 alpha. The two hues (blue savings / orange payback) were
+  validated for colour-vision deficiency against the card surface rather than eyeballed
+  (worst pair ΔE 24.7 protan, 33.6 normal vision, OKLab x100).
+- **DejaVu Sans only, set through an `rc_context`.** It is the one family matplotlib
+  bundles in its own wheel, so the card renders identically on a stranger's machine.
+  The rc matters and is not tidiness: matplotlib *regenerates* tick labels whenever the
+  locator reruns (`set_xticklabels`, `set_ylim`, `axhline` all trigger it), so a family
+  stamped on the artists that exist at styling time is silently lost by the ones
+  actually drawn — they fall back to the "sans-serif" alias and resolve to whatever the
+  reader has installed. `rc_context` also keeps the fix off the importing process's
+  global rcParams. Caught by a test, not by looking at the picture.
+- **Honesty constraints, each pinned by a mutation-checked test:** the seasonality
+  warning is drawn *on the card* as a filled band (the card travels without the report,
+  so a 60-day result must not be screenshottable as a year); payback keeps one decimal
+  and is never rounded into a friendlier number; the tariff is always printed, via the
+  shared `describe_tariff`, because savings without the prices that produced them cannot
+  be checked by anyone.
+- **Negative savings are drawn below zero, not clipped to an empty panel.** Under a
+  feed-in tariff more generous than the import price the battery loses money at every
+  capacity — real, and exactly the result this tool exists to be willing to report.
+  A zero-anchored axis would render those bars as nothing at all, i.e. an empty chart
+  beside a headline saying the battery lost money. The zero rule is then drawn and the
+  bottom spine demoted to gridline weight, so the emphasis follows the meaning.
+- **Very long paybacks are clipped with a visible break, never a flat top.** Left
+  unclipped, one 300-year bar flattens the rest into the baseline. Clipped flat, three
+  capped bars read as *equal* — a worse misreading than the crowding. The bar is cut by
+  a surface-coloured band with a detached stub above it, and the true figure is
+  labelled. Only triggers past 1.25x the cap, so a 41-year bar is not distorted for
+  nothing.
+- **Fixed x-slots (`_MIN_SLOTS = 4`).** Left to matplotlib's own limits a
+  single-capacity sweep draws one bar spanning the whole panel, which reads as a
+  progress meter rather than one point in a comparison.
+- **The payback panel is dropped when there is no payback to draw** — no battery cost,
+  or no positive savings anywhere. Either way the savings panel takes the full height
+  instead of sharing it with a title over a row of "never".
+- **No recomputation.** Every figure comes off `AnalysisResult` through the same
+  `annualization_years` the report uses. A card and a report disagreeing about the same
+  run would discredit both, and arithmetic in two places is how that happens.
+- Built entirely on matplotlib's OO API with an explicit `FigureCanvasAgg`; pyplot's
+  global figure registry is never touched, so a long-running caller leaks nothing.
+- **Project identity is one constant, in `__init__.py`.** `REPO_URL` /
+  `REPO_DISPLAY_URL` / `PROJECT_NAME` are imported by the card footer and the report
+  header; neither retypes them. The URL is the project's *only return channel* — a
+  reader holding a screenshot has nothing else — so a wrong one does not degrade the
+  artifact, it makes it worthless, and the mistake is invisible to everyone who already
+  knows where the repo is. `[project.urls]` in pyproject is the one place that must
+  repeat the string (packaging metadata cannot import from its own package), and a test
+  pins it against the constant. Tests also assert the literal correct URL, so renaming
+  the account cannot make them quietly agree with a new mistake.
+- **`scripts/render_sample_cards.py` renders the fixture plus all four edge cases** into
+  the git-ignored `scratchpad/cards/`, printing absolute paths. It exists because the
+  card's layout defects are the class of bug the suite structurally cannot catch:
+  clipped headlines, colliding labels, bars that read as equal. Looking has to be one
+  command, or it silently stops happening.
 
 ## DST handling (decided, with rationale)
 
@@ -373,3 +442,68 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   ~55 kWh gap against the raw 30-minute derived import/export is the known, documented
   hourly-netting effect and cancels out of the balance. Both fixes were mutation-checked
   by reintroducing the old constant and the old reference capacity.
+- **2026-08-11 (6)** — **Milestone 2 closed.** PNG summary card (`card.py`, 25 tests) +
+  `--card/--no-card` wiring. Suite 171 → 200, ruff and mypy strict clean. Design
+  rationale is in the new section above.
+
+  *Every layout defect was found by rendering and looking, not by a test.* The first
+  render clipped the headline at "5 kWh is enough for this" — the fitting rule was a
+  character-count guess, and a character budget is a guess about average glyph width
+  that guesses wrong on exactly the strings that matter (bold 54pt "12.5 kWh…" is far
+  wider than three extra characters). It now measures the rendered width and steps down.
+  Four more of the same kind followed: the panel title landing on the stat labels, the
+  x-axis title on the footer rule, the single-capacity bar filling the panel, the
+  clipped payback bars reading as three equal 40-year batteries. **A test suite can pin
+  what the card says; only looking at it pins what it shows.** Both got used here, and
+  the split is worth carrying into M3's README screenshot work.
+
+  *One real portability bug came the other way — from a test the picture could not
+  show.* The font assertion, once widened to `figure.findobj(Text)`, found the visible
+  "5 kWh" tick labels rendering in the `sans-serif` alias rather than DejaVu: matplotlib
+  regenerates tick artists on every locator pass, so the per-artist family set during
+  styling was discarded before the draw. It looked correct on this machine precisely
+  because the alias resolves to DejaVu here — it would have diverged on a reader's.
+  Fixed with `rc_context`. The lesson pairs with session (5)'s: **an assertion that only
+  walks the artists you remembered to create cannot catch the ones the library creates
+  for you.** The narrow walk passed; `findobj` failed.
+
+  Verified on the Ausgrid fixture through the CLI: card and report agree to the digit
+  (5 kWh · 211 EUR/yr · 14.2 y), reproducing session (3)'s figures again. Thumbnail
+  test at 400x400 passes — headline and both stat values still legible. Degenerate
+  cases rendered and inspected individually: no battery cost (payback panel and stat
+  both dropped, recommendation falls back to largest savings at 20 kWh), single capacity
+  (centred, slot-width bar), 60-day period (warning band + all three paybacks clipped
+  with true values labelled), and a losing tariff (−598/−1,031/−1,254 EUR/yr drawn below
+  a zero rule under "No battery paid off here"). The seasonality warning and the
+  no-flattering-rounding rule were mutation-checked.
+
+  **Next: Milestone 3** — HA long-term statistics parser, optional LLM layer, README
+  with the real card screenshot, Dockerfile, launch posts. Per session (3)'s note, check
+  what M3's *last* step needs before assuming the milestone is self-contained: the
+  README screenshot depends on the card, which now exists, but the launch posts depend
+  on the README.
+- **2026-08-11 (7)** — **Wrong repo URL on the card, fixed before first commit.** The
+  card shipped `github.com/marcoconti/battery-worth`; the account is `contimarco77`.
+  Suite 200 → 203.
+
+  Worth recording because of *how* it nearly shipped: I wrote the placeholder, flagged
+  it in the handoff as "worth a look", and moved on — treating a wrong string in the
+  one artifact designed to be seen by strangers as a cosmetic loose end rather than as
+  a defect. It is the opposite: the URL is the project's only return channel, a dead
+  link makes every posted card worthless, and it is invisible to everyone who already
+  knows the repo. **Flagging a known-wrong value is not the same as fixing it, and
+  "placeholder" is not a severity.**
+
+  Now one constant in `__init__.py`, imported by both renderers (the report template's
+  header carried the same wrong URL — the grep found a second copy I had not put on the
+  list). `[project.urls]` added to pyproject, which had no URL metadata at all. Three
+  tests: the literal correct URL on the card, card and report agreeing, and pyproject
+  matching the constant. Mutation-checked by reintroducing the old account — two tests
+  fail.
+
+  Also from the same review: **artifact paths must be stated, not implied.** The cards
+  had been rendered into a session-temp directory and described in prose, which is not
+  a deliverable anyone can look at. `scripts/render_sample_cards.py` now writes all five
+  to `scratchpad/cards/` with self-describing names and prints absolute paths.
+  Confirmed by direct CLI runs that `--card` is on by default, `--no-card` suppresses it
+  silently, and both artifact paths are named in the terminal.

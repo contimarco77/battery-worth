@@ -389,15 +389,87 @@ def test_output_writes_a_markdown_report(meter_csv: Path, tmp_path: Path) -> Non
 def test_terminal_output_identical_with_and_without_output(
     meter_csv: Path, tmp_path: Path
 ) -> None:
-    """--output is purely additive: it must not reshape what lands on stdout."""
+    """--output is purely additive: it must not reshape what lands on stdout.
+
+    Both artifacts it produces — the report and the summary card beside it —
+    announce themselves as trailing lines and change nothing above them.
+    """
     args = ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5"]
     without = runner.invoke(app, args)
     with_file = runner.invoke(app, [*args, "--output", str(tmp_path / "r.md")])
 
     assert without.exit_code == 0
     assert with_file.exit_code == 0
-    trailer = f"Report written to {tmp_path / 'r.md'}\n"
-    assert with_file.output.replace(trailer, "") == without.output
+    trailers = (
+        f"Report written to {tmp_path / 'r.md'}\n"
+        f"Summary card written to {tmp_path / 'r.png'}\n"
+    )
+    assert with_file.output.replace(trailers, "") == without.output
+
+
+def test_card_is_written_alongside_the_report(meter_csv: Path, tmp_path: Path) -> None:
+    """The card ships with the report by default — it is the artifact people share."""
+    target = tmp_path / "report.md"
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
+         "--battery-cost-per-kwh", "600", "--output", str(target)],
+    )
+
+    card = tmp_path / "report.png"
+    assert result.exit_code == 0, result.output
+    assert card.exists()
+    assert card.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert f"Summary card written to {card}" in result.output
+
+
+def test_no_card_skips_it(meter_csv: Path, tmp_path: Path) -> None:
+    """--no-card leaves the report untouched and writes no PNG."""
+    target = tmp_path / "report.md"
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
+         "--output", str(target), "--no-card"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert target.exists()
+    assert not (tmp_path / "report.png").exists()
+    assert "Summary card" not in result.output
+
+
+def test_no_card_without_output_writes_nothing(meter_csv: Path, tmp_path: Path) -> None:
+    """The card rides on --output; without it, nothing is written anywhere.
+
+    `--card` defaults to true, so a plain `analyze` run must not start dropping
+    PNGs into the working directory on the strength of a default the user never
+    typed.
+    """
+    result = runner.invoke(
+        app, ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Summary card" not in result.output
+    assert not list(tmp_path.glob("*.png"))
+
+
+def test_card_reports_its_own_write_failure(meter_csv: Path, tmp_path: Path) -> None:
+    """A card that cannot be written is a user error naming the card, not the report."""
+    target = tmp_path / "sub" / "report.md"
+    target.parent.mkdir()
+    # A directory where the PNG wants to be: the report writes fine, the card cannot.
+    (tmp_path / "sub" / "report.png").mkdir()
+
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--capacities", "0,5",
+         "--output", str(target)],
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "Could not write the summary card" in result.output
+    assert target.exists(), "the report still landed before the card failed"
 
 
 def test_output_to_an_unwritable_path_is_a_user_error(meter_csv: Path, tmp_path: Path) -> None:

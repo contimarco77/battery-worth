@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 
+from battery_worth import PROJECT_NAME, REPO_URL
 from battery_worth.analysis import recommended_scenario
 from battery_worth.models import AnalysisResult, ScenarioResult, Tariff, TariffKind
 
@@ -73,6 +74,8 @@ def render_report(
         has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
         tariff_description=describe_tariff(tariff),
         warnings=warnings or [],
+        project_name=PROJECT_NAME,
+        repo_url=REPO_URL,
     ).strip() + "\n"
 
 

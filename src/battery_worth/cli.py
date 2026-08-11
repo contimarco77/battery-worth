@@ -4,8 +4,9 @@ v0 surface (locked scope):
     battery-worth analyze data.csv --capacities 5,10,15,20 --flat-price 0.28 \
         --export-price 0.10 --battery-cost-per-kwh 500
 
-Output is plain text on stdout — no rich, no tables dependency. The jinja2 report
-and the PNG summary card are milestone 2; `--llm` commentary is milestone 3.
+Output is plain text on stdout — no rich, no tables dependency. `--output` adds
+the Markdown report, and the PNG summary card is written beside it unless
+`--no-card` is passed. `--llm` commentary is milestone 3.
 
 Exit codes: 0 on success, 2 on user error (bad file, bad columns, bad config).
 Anything the user can fix by changing a flag or their CSV is a user error and is
@@ -24,6 +25,7 @@ import pandas as pd
 import typer
 
 from battery_worth.analysis import recommended_scenario, run_analysis
+from battery_worth.card import render_summary_card
 from battery_worth.ingest import load_energy_data
 from battery_worth.models import (
     AnalysisResult,
@@ -126,6 +128,14 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         typer.Option(help="Write the full Markdown report to this file (terminal output is "
                           "unaffected)"),
     ] = None,
+    card: Annotated[
+        bool,
+        typer.Option(
+            "--card/--no-card",
+            help="Write the shareable PNG summary card alongside --output "
+                 "(same name, .png extension)",
+        ),
+    ] = True,
 ) -> None:
     """Run the retrospective what-if analysis and print the results."""
     tariff = _build_tariff(
@@ -193,6 +203,14 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         except OSError as exc:
             _fail(f"Could not write the report to '{output}': {exc}")
         typer.echo(f"Report written to {output}")
+
+        if card:
+            card_path = output.with_suffix(".png")
+            try:
+                render_summary_card(result, card_path, tariff=tariff)
+            except OSError as exc:
+                _fail(f"Could not write the summary card to '{card_path}': {exc}")
+            typer.echo(f"Summary card written to {card_path}")
 
 
 def _parse_capacities(raw: str) -> list[float]:

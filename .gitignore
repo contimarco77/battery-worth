@@ -7,3 +7,7 @@ report/
 .pytest_cache/
 dist/
 .prompts
+# Rendered cards and reports for visual inspection. Regenerated on demand by
+# scripts/render_sample_cards.py; the README's screenshot is committed separately
+# and deliberately, not swept in from here.
+scratchpad/
