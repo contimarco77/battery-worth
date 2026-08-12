@@ -138,6 +138,10 @@ on the strength of the numbers above.
 - **Period analysed: {{ r.days_analyzed }} days** ({{ r.period_start[:10] }} to {{ r.period_end[:10] }}). That is a full year, so
   seasonal swings in both PV and consumption are captured rather than extrapolated.
 {% endif %}
+- **Missing periods count as zero energy.** Any interval your data does not cover is
+  simulated as zero consumption and zero production, not as an average of the hours
+  around it. A gappy export therefore understates both what you used and what your roof
+  made, and with it what a battery would have been worth.
 - **Battery specification is assumed, not measured.** Charge/discharge power limits,
   round-trip efficiency and minimum state of charge come from the values passed on the
   command line. A real installation's inverter limits and standby losses will differ.

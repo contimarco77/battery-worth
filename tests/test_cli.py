@@ -647,3 +647,128 @@ def test_terminal_and_report_print_the_same_annual_savings(meter_csv: Path, tmp_
         assert terminal_savings == report_savings, (
             f"{capacity} kWh: terminal says {terminal_savings}, report says {report_savings}"
         )
+
+
+def test_unknown_timezone_names_the_flag_not_the_file(grid_csv: Path) -> None:
+    """A typo'd --timezone must not read as a problem with the user's CSV.
+
+    `ZoneInfoNotFoundError` subclasses `KeyError`, so an unknown zone used to fall
+    through to the ingest error path and print "Could not read '<file>': ...",
+    sending the user to inspect a file that is perfectly fine.
+    """
+    result = runner.invoke(
+        app, ["analyze", str(grid_csv), "--flat-price", "0.3", "--timezone", "Not/AZone"]
+    )
+
+    assert result.exit_code == USER_ERROR_EXIT_CODE
+    assert "--timezone" in result.output
+    assert "Not/AZone" in result.output
+    assert "Could not read" not in result.output
+    assert str(grid_csv) not in result.output
+
+
+def rising_interval_csv(path: Path, days: int = 60) -> Path:
+    """Per-interval energy that happens to never decrease — the case the detector cannot win.
+
+    A meter reading and a monotonically rising interval series are *mathematically
+    indistinguishable*: both are non-decreasing sequences of positive numbers. No
+    heuristic can separate them, which is exactly why the override has to exist rather
+    than the detector being made cleverer. This one is a slow linear ramp in every
+    column (a household whose load and PV both creep up over the period), so
+    `_is_cumulative` sees no drops at all and diffs all three columns.
+    """
+    hours = days * 24
+    idx = pd.date_range("2025-01-01", periods=hours, freq="h")
+    ramp = np.linspace(0.0, 1.0, hours)
+    pd.DataFrame(
+        {
+            "timestamp": idx.strftime("%Y-%m-%d %H:%M:%S"),
+            "grid_import": 1.0 + ramp,
+            "grid_export": 0.5 + ramp,
+            "pv_production": 2.0 + ramp,
+        }
+    ).to_csv(path, index=False)
+    return path
+
+
+def test_no_cumulative_overrides_a_misfiring_detector(tmp_path: Path) -> None:
+    """--no-cumulative rescues per-interval data the auto-detector reads as a meter.
+
+    Without the flag this is unrecoverable from the CLI: the detector diffs all three
+    columns, turning ~1 kWh/h of import into ~0.00001 kWh/h, and the warning tells the
+    user to do something only the Python API allowed. Hand-computed anchor: the ramp
+    adds 1.0 kWh across 1440 hours, so a differenced column steps by 1/1439 ≈ 0.0007
+    per hour where the real interval value is ~1.0 — three orders of magnitude apart,
+    so the assertion cannot pass by coincidence.
+    """
+    csv = rising_interval_csv(tmp_path / "rising.csv")
+    argv = ["analyze", str(csv), "--capacities", "5", "--flat-price", "0.25"]
+
+    auto = runner.invoke(app, argv)
+    forced = runner.invoke(app, [*argv, "--no-cumulative"])
+
+    assert auto.exit_code == 0, auto.output
+    assert forced.exit_code == 0, forced.output
+
+    # Auto-detection misfires here, and says so.
+    assert "Cumulative cols" in auto.output
+    assert "cumulative meter reading" in auto.output
+    # The override takes the column at face value, and reports no differencing.
+    assert "Cumulative cols" not in forced.output
+    assert "cumulative meter reading" not in forced.output
+
+    # The flag is what separates a battery worth having from one worth nothing: with
+    # the columns wrongly differenced there is essentially no energy left to store.
+    assert "0%" in auto.output
+    assert _self_consumption_after(forced.output, "5 kWh") > 0.0
+
+
+def test_cumulative_forces_differencing_on_data_read_as_per_interval(tmp_path: Path) -> None:
+    """--cumulative overrides the other way, and names itself in the warning.
+
+    The synthetic CSV's columns repeat a daily pattern, so the detector correctly
+    leaves them alone; passing --cumulative must still force the running difference
+    and must not blame the data for a choice the user made on the command line.
+    """
+    csv = write_csv(
+        tmp_path / "grid.csv",
+        {
+            "timestamp": "timestamp",
+            "grid_import": "grid_import",
+            "grid_export": "grid_export",
+            "pv_production": "pv_production",
+        },
+    )
+    argv = ["analyze", str(csv), "--capacities", "5", "--flat-price", "0.25"]
+
+    auto = runner.invoke(app, argv)
+    forced = runner.invoke(app, [*argv, "--cumulative"])
+
+    assert auto.exit_code == 0, auto.output
+    assert forced.exit_code == 0, forced.output
+
+    assert "Cumulative cols" not in auto.output
+    assert "Cumulative cols" in forced.output
+    assert "grid_import" in forced.output
+    assert "--cumulative was passed" in forced.output
+    # It was not "detected"; the user said so. The auto-detect wording must not appear.
+    assert "looks like a cumulative meter reading" not in forced.output
+
+
+def test_terminal_limits_states_the_zero_fill_rule(meter_csv: Path) -> None:
+    """The terminal caveats mirror the report's, so a new one must land in both.
+
+    A reader who never passes --output sees only this list; the two drifting apart is
+    how a caveat ends up documented in the artifact nobody generated.
+    """
+    result = runner.invoke(app, ["analyze", str(meter_csv), "--flat-price", "0.25"])
+
+    assert result.exit_code == 0, result.output
+    limits = result.output.split("LIMITS & ASSUMPTIONS")[1]
+    assert "zero consumption and zero production" in limits
+
+
+def _self_consumption_after(output: str, label: str) -> float:
+    """The 'X% -> Y%' self-consumption column of one scenario row, as a fraction."""
+    row = next(line for line in output.splitlines() if line.strip().startswith(label))
+    return float(row.split("->")[1].split("%")[0].strip()) / 100.0

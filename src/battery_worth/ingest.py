@@ -40,18 +40,7 @@ def load_energy_data(
     raw = _read_csv(path, mapping, source_columns)
     raw, warnings = _localize_and_sort(raw, timezone, mapping.timestamp)
 
-    cumulative_columns: list[str] = []
-    for col in source_columns:
-        is_cumulative = _is_cumulative(raw[col]) if cumulative is None else cumulative
-        if is_cumulative:
-            cumulative_columns.append(col)
-            raw[col] = raw[col].diff()
-            raw.loc[raw.index[0], col] = 0.0
-            warnings.append(
-                f"Column '{col}' looks like a cumulative meter reading (values only ever "
-                "increase) — converted to per-interval energy with a running difference. "
-                "Pass cumulative=False if this column is already per-interval energy."
-            )
+    cumulative_columns = _difference_cumulative_columns(raw, source_columns, cumulative, warnings)
 
     raw_index = pd.DatetimeIndex(raw.index)
     native_resolution_minutes = _infer_resolution_minutes(raw_index)
@@ -103,7 +92,11 @@ def load_energy_data(
 
     result = _derive_grid_columns(hourly, mapping)
 
-    days_analyzed = _days_analyzed(pd.DatetimeIndex(hourly.index))
+    # Counted on the RAW index, not the resampled one: `resample("h")` materializes
+    # every missing hour of a gap as a zero row, so the hourly index spans the gap
+    # even though no reading in it does. Counting there would restore the very
+    # calendar-span figure this is avoiding.
+    days_analyzed = _days_analyzed(raw_index)
     if days_analyzed < _MIN_DAYS:
         msg = (
             f"Only {days_analyzed} day(s) of data found in '{path}', but at least "
@@ -267,6 +260,53 @@ def _localize_and_sort(
     return df, warnings
 
 
+def _difference_cumulative_columns(
+    raw: pd.DataFrame,
+    source_columns: list[str],
+    cumulative: bool | None,
+    warnings: list[str],
+) -> list[str]:
+    """Convert meter readings to per-interval energy, in place, and say why.
+
+    `cumulative` is three-state and the third state is the point of it. `None`
+    auto-detects per column; `True` and `False` are the user overriding that from the
+    command line (`--cumulative` / `--no-cumulative`).
+
+    The override is not a convenience: a per-interval column that happens to never
+    decrease is *mathematically indistinguishable* from a meter reading — both are
+    non-decreasing sequences — so no heuristic can separate them and only the person
+    who exported the file knows which it is. `_is_cumulative` will read such a column
+    as a meter and diff away three orders of magnitude of energy.
+
+    The warning therefore differs by who decided. When detection fired, it names the
+    flag that undoes it. When the user forced it, it says so, because telling someone
+    their data "looks like" a meter reading after they asserted that it is one blames
+    the file for their own instruction.
+    """
+    cumulative_columns: list[str] = []
+    for col in source_columns:
+        is_cumulative = _is_cumulative(raw[col]) if cumulative is None else cumulative
+        if not is_cumulative:
+            continue
+        cumulative_columns.append(col)
+        raw[col] = raw[col].diff()
+        raw.loc[raw.index[0], col] = 0.0
+        if cumulative is None:
+            warnings.append(
+                f"Column '{col}' looks like a cumulative meter reading (values only ever "
+                "increase) — converted to per-interval energy with a running difference. "
+                "If this column is already per-interval energy, re-run with "
+                "--no-cumulative to keep it as-is."
+            )
+        else:
+            warnings.append(
+                f"Column '{col}' was treated as a cumulative meter reading because "
+                "--cumulative was passed, and converted to per-interval energy with a "
+                "running difference. This overrode the automatic detection."
+            )
+    return cumulative_columns
+
+
 def _is_cumulative(series: pd.Series) -> bool:
     """A column is treated as cumulative if it is monotonically non-decreasing overall,
     tolerating small floating-point noise and occasional meter resets (drops)."""
@@ -349,5 +389,21 @@ def _derive_grid_columns(hourly: pd.DataFrame, mapping: ColumnMapping) -> pd.Dat
 
 
 def _days_analyzed(index: pd.DatetimeIndex) -> int:
-    span = index[-1] - index[0]
-    return int(span.total_seconds() // 86400) + 1
+    """Number of days the data actually *covers*, not the calendar span it straddles.
+
+    These are the same number on a continuous file and wildly different on a gappy
+    one, and the difference is an annualization bug of the same shape as the 365.25
+    and the period-vs-annual payback: uniformly wrong, invisible on the project's
+    own fixture (which has no gaps), and printed as a confident figure.
+
+    A file holding 60 days of readings in January and 5 more the following January
+    spans 371 days. Annualizing 65 days of savings as if they were 371 divides the
+    per-year figure by 5.7 — a battery that pays back in 10 years is reported at
+    57.8 — and `days_analyzed >= 365` then *suppresses the seasonality warning*, so
+    the report affirmatively states "That is a full year" about two winter months.
+
+    Counting distinct days present makes the divisor match the energy that was
+    actually summed. It is exact on the continuous case (the span count and the
+    coverage count agree), so no existing correct result moves.
+    """
+    return max(1, int(index.normalize().nunique()))

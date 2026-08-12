@@ -122,7 +122,7 @@ precisely so the test suite is type-checked rather than silently degraded to `An
   - [ ] README with real card screenshot
   - [ ] Dockerfile (multi-stage), launch posts
 
-**Milestone 2 is closed.** Suite: 318 tests passing, all four gates clean
+**Milestone 2 is closed.** Suite: 328 tests passing, all four gates clean
 (see "Definition of done").
 
 ## Validated invariants
@@ -254,13 +254,22 @@ consequence of the locked "downsample to hourly" decision.
 
 ## Annualization (decided, with rationale) — READ BEFORE ADDING ANY DERIVED FIGURE
 
-**Two bugs of the same shape have shipped here. Assume a third is possible.**
+**Three bugs of the same shape have shipped here. Assume a fourth is possible.**
 
 - Session (5): the report divided by 365.25, so every headline figure sat 0.07% off
   the user's own column sums.
 - Session (8): `payback_years()` divided cost by **period** savings instead of
   annual savings, overstating payback by 365/days — 6x on a 60-day file, printed
   directly beside the annualized savings figure that contradicted it.
+- Session (12): `_days_analyzed` measured the **calendar span** between the first and
+  last timestamp rather than the days actually covered. On a gappy file — 60 days of
+  readings, a hole, 5 more days the following January — 65 days of data reported as
+  371, so every per-year figure was 5.7x too small and every payback 5.7x too long
+  (a 10.1-year payback printed as 57.8). Worse, `371 >= 365` **suppressed the
+  seasonality warning**, so the report affirmatively printed "That is a full year, so
+  seasonal swings are captured rather than extrapolated" about two winter months.
+  The divisor and the warning threshold were the same number, so one wrong count
+  broke the figures *and* the caveat that would have qualified them.
 
 Both were invisible to a full suite, for the same reason: **every test compared one
 layer of our code against another, and the layers agreed while being uniformly
@@ -284,6 +293,26 @@ Rules that follow, and that a reviewer should enforce:
   arithmetic inline (3000 / (32.7 × 365/60) = 15.08) and assert that the same data
   truncated to 60/180/365 days yields the same payback — a period-invariance check
   that no internal-consistency test could have expressed.
+- **`days_analyzed` is a measure of coverage, not of extent.** It counts distinct
+  days carrying readings, on the **raw** index — never the resampled one, because
+  `resample("h")` materializes every missing hour of a gap as a zero row and
+  reinstates the calendar-span figure exactly. Any future field that sizes the
+  period has the same trap.
+- **The fixture cannot see this class of bug, and its shape says why.** Ausgrid is
+  365 continuous days, and it has now hidden two bugs through two *different*
+  properties. Its **length** hid the 365.25 drift and the period-vs-annual payback:
+  365 days is the identity for annualization, so any divisor error vanishes on it.
+  Its **continuity** hid the span-vs-coverage count: with no gaps, span == coverage,
+  so the two definitions are the same number and the wrong one looks right.
+
+  The generalised rule: **when adding a derived figure, ask what the fixture's
+  regularity conceals, not only what its duration conceals.** Every property that
+  makes a fixture convenient — a whole year, no gaps, one timezone, a constant
+  sampling interval, no meter resets, positive prices throughout — is a degenerate
+  case in which some wrong formula agrees with the right one. Enumerate the
+  properties, then write the anchor test against a shape the fixture does *not*
+  have: gappy, short, irregular, reset mid-series. A test that only runs on the
+  convenient fixture cannot distinguish the definitions the convenience collapsed.
 
 ## Summary card (decided, with rationale)
 
@@ -845,6 +874,89 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   the sixth differs only in three docstrings where the formatter inserted a space after
   the opening `"""` on strings whose text begins with a quote character (`""""Pays` →
   `""" "Pays`), a required disambiguation that touches no assertion.
+- **2026-08-12 (2)** — **Pre-launch audit.** Suite 318 → 321, all four gates clean.
+  Two fixes, both cheap; everything else reported rather than changed.
+
+  *`days_analyzed` measured calendar span, not coverage* — the third bug of the shape
+  documented in the Annualization section, found by asking what the fixture's
+  *regularity* hides rather than what its length hides. Details and the durable rule
+  are in that section. Mutation-checked: reverting to the span count fails the new
+  test with 371 == 65. All four Ausgrid capacity rows still reproduce session (3)'s
+  figures exactly (211/14.2 · 363/16.5 · 442/20.4 · 462/26.0), so the fix moved no
+  correct result.
+
+  *An unknown `--timezone` blamed the CSV.* `ZoneInfoNotFoundError` subclasses
+  `KeyError`, so it fell through to the ingest handler and printed "Could not read
+  '<file>'", sending the user to inspect a file that was fine. Validated up front
+  where the message can name the flag.
+
+  *The "anchored to the input file" claim was weaker than written.* No test loads the
+  Ausgrid CSV — the fixture lives outside the repo, so `test_a_full_year_annualizes_to_itself`
+  asserts against hand-typed constants, and `AUSGRID_IMPORT_KWH` is itself derived from
+  the other two through our own balance equation. That is still a real anchor (the
+  numbers came from the file once, by hand) but it is a *transcribed* one: it cannot
+  detect ingest drift, and nothing re-checks the transcription. Left as-is deliberately
+  — the honest fix is a committed small real-data fixture, which is a decision, not a
+  cleanup.
+- **2026-08-12 (3)** — **Four pre-launch fixes from the audit.** Suite 321 → 328, all
+  four gates clean.
+
+  *`--cumulative` / `--no-cumulative` added to the CLI.* The auto-detector's warning
+  told the user to "Pass cumulative=False" — a Python keyword argument, from a tool
+  almost everyone meets through the command line. **An escape hatch that exists only
+  in an API the user is not using is not an escape hatch; naming a flag that does not
+  exist is worse than naming none.** The flag is three-state (`None` auto-detects per
+  column, `True`/`False` force it), and the warning now differs by *who decided*:
+  detection names the flag that undoes it, an explicit `--cumulative` says it overrode
+  detection rather than telling the user their data "looks like" something they had
+  just asserted it was.
+
+  The case that justifies the override is worth stating precisely, because it is not a
+  detector weakness that could be engineered away: **a per-interval column that never
+  decreases is mathematically indistinguishable from a meter reading.** Both are
+  non-decreasing sequences of positive numbers. No heuristic separates them, so only
+  the person who exported the file can. `test_a_rising_interval_column_is_indistinguishable_without_the_override`
+  pins it as a property of the data — the same file yields ~1.0 kWh/h with the override
+  and ~0.0007 without, three orders of magnitude decided entirely by the flag.
+
+  *`_scenario_row` recomputed `savings_eur / years`* where the report used
+  `annual_savings_eur`. Identical today; it is the exact duplication shape that produced
+  the session (8) payback bug, and the Annualization section's own rule forbids it.
+  Fixed by using the model property.
+
+  *README's status line disclaimed a finished engine* ("pre-alpha, engine under
+  construction") — a launch post pointing at a README that undercuts its own subject.
+  Rewritten to state what exists and what does not, in both directions: no LLM layer,
+  no Docker image, no native HA/inverter parser, nothing on PyPI. An earlier draft said
+  "install from source", which the README has no instructions for — a status line must
+  not create a second false claim while fixing the first.
+
+  *Gaps-as-zero was warned about at ingest but absent from "Limits & assumptions".* The
+  ingest warning fires only when a run *has* a gap; the Limits section describes how the
+  tool works regardless, and a reader deciding whether to trust these numbers on their
+  own data needs it before they hold a file with a hole in it. Added to the report and
+  the terminal, with a test in each — the two caveat lists mirror each other and drifting
+  apart is how a caveat ends up documented only in the artifact nobody generated.
+
+  *The card footer was checked and deliberately left alone.* It carries period, tariff
+  and one honesty line, and its constraint is space: the card gets three seconds and
+  every line competes with the verdict. Gaps-as-zero is a conditional caveat about a
+  data shape most files do not have, where the seasonality warning it would sit beside
+  is drawn only when it actually applies. A permanent line about a hypothetical gap
+  would cost the same room for less. The card's period line already states the days
+  analysed, which — since session (12)'s fix — counts *covered* days, so a gappy export
+  shows a smaller number there rather than silently spanning the hole.
+
+  *One gate finding worth keeping:* `ruff` flagged `load_energy_data` at 13 branches
+  after the two-message split. That is the linter noticing the function had accumulated
+  a second concern, not a threshold to appease — the cumulative handling moved to
+  `_difference_cumulative_columns`, which is where the reasoning about the three states
+  now lives.
+
+  *Recorded, not started (post-launch decisions, not cleanups):* the trimmed real-data
+  fixture (audit section 2 — the honest fix for the transcribed-anchor problem noted in
+  session (2) above), the duplicate "days" definition shared by simulator and ingest,
+  and the `OSError` handler in `ha_export`.
 - **2026-08-12** — **Home Assistant export, as a standalone script rather than an
   integration.** `scripts/ha_export.py` + 76 tests. Suite 242 → 318, all four gates
   clean, and `mypy --strict` clean on the script and its tests as well as on `src/`.

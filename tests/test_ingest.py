@@ -177,6 +177,76 @@ def test_cumulative_override_false(tmp_path: Path) -> None:
     assert df["grid_import"].iloc[1] == pytest.approx(1.0)
 
 
+def test_cumulative_warning_names_the_cli_flag(tmp_path: Path) -> None:
+    """The escape hatch offered by the warning must be one the user can actually take.
+
+    The message used to say "Pass cumulative=False", which is the Python keyword
+    argument — invisible from the command line, where nearly everyone meets this
+    warning. Naming a flag that does not exist is worse than naming none.
+    """
+    n = 31 * 24
+    imp_cumulative = [float(i) for i in range(n)]
+    _, exp, pv = days_of_hourly_data(n // 24)
+    csv = make_grid_csv(tmp_path, "2025-01-01 00:00", imp_cumulative, exp, pv)
+
+    _, report = load_energy_data(csv, GRID_MAPPING)
+
+    warning = next(w for w in report.warnings if "cumulative meter reading" in w)
+    assert "--no-cumulative" in warning
+    assert "cumulative=False" not in warning
+
+
+def test_cumulative_true_forces_differencing_and_says_who_decided(tmp_path: Path) -> None:
+    """cumulative=True overrides a detector that (correctly) sees interval data.
+
+    Hand-computed: a column repeating 0.5, 0.7, 0.3 hourly is not monotonic, so the
+    detector leaves it alone. Forced, it is differenced: row 1 becomes 0.7-0.5 = 0.2,
+    row 2 becomes 0.3-0.7 = -0.4, which is then clipped to 0 as a meter reset. The
+    warning must attribute the choice to the flag rather than to the data.
+    """
+    imp, exp, pv = days_of_hourly_data(31)
+    csv = make_grid_csv(tmp_path, "2025-01-01 00:00", imp, exp, pv)
+
+    df, report = load_energy_data(csv, GRID_MAPPING, cumulative=True)
+
+    assert report.cumulative_columns == ["imp", "exp", "pv"]
+    assert df["grid_import"].iloc[1] == pytest.approx(0.2)
+    assert df["grid_import"].iloc[2] == pytest.approx(0.0)  # -0.4 clipped
+
+    warning = next(w for w in report.warnings if "'imp'" in w and "cumulative" in w)
+    assert "--cumulative was passed" in warning
+    assert "looks like a cumulative meter reading" not in warning
+
+
+def test_a_rising_interval_column_is_indistinguishable_without_the_override(
+    tmp_path: Path,
+) -> None:
+    """The precise case the override exists for, pinned as a property of the data.
+
+    A per-interval column that never decreases is *mathematically identical in shape*
+    to a meter reading: both are non-decreasing sequences. The detector cannot resolve
+    it — and must not be blamed for that — so the only correct fix is the user saying
+    which one it is. Here the same file yields ~1.0 kWh/h with the override and a
+    ~0.0007 kWh/h step without it: three orders of magnitude, decided entirely by the
+    flag.
+    """
+    n = 31 * 24
+    step = 1.0 / (n - 1)
+    rising = [1.0 + i * step for i in range(n)]  # per-interval kWh, slowly creeping up
+    csv = make_grid_csv(tmp_path, "2025-01-01 00:00", rising, list(rising), list(rising))
+
+    auto_df, auto_report = load_energy_data(csv, GRID_MAPPING)
+    forced_df, forced_report = load_energy_data(csv, GRID_MAPPING, cumulative=False)
+
+    assert auto_report.cumulative_columns == ["imp", "exp", "pv"], (
+        "the detector is expected to misfire here — that is the premise of the test"
+    )
+    assert auto_df["grid_import"].iloc[1] == pytest.approx(step, rel=1e-6)
+
+    assert forced_report.cumulative_columns == []
+    assert forced_df["grid_import"].iloc[1] == pytest.approx(1.0 + step, rel=1e-6)
+
+
 def test_dst_autumn_duplicate_hour(tmp_path: Path) -> None:
     """Europe/Rome, 2025-10-26: local 02:00 occurs twice (ambiguous). A CSV row for both
     instances of 02:00 (as a real HA export would contain) must localize via
@@ -454,3 +524,41 @@ def test_incomplete_column_mapping_rejected() -> None:
     """Providing neither a complete grid-centric nor meter-centric schema must fail fast."""
     with pytest.raises(ValueError, match="incomplete"):
         ColumnMapping(timestamp="ts", pv_production="pv", grid_import="imp")
+
+
+def test_days_analyzed_counts_covered_days_not_calendar_span(tmp_path: Path) -> None:
+    """A gap must not inflate the annualization divisor.
+
+    Hand-computed, and deliberately not compared against another layer of ours:
+    60 days of hourly readings starting 2024-01-01, then a hole, then 5 more days
+    starting 2025-01-01. That is **65 days of data** covering a **371-day span**.
+
+    Counting the span made every per-year figure 371/65 = 5.7x too small and every
+    payback 5.7x too long, and — because 371 >= 365 — it also suppressed the
+    seasonality warning, so the report affirmatively called two winter months
+    "a full year". Invisible on the project's own fixture, which has no gaps and
+    where span and coverage are the same number.
+    """
+    rows: list[Sequence[object]] = []
+    for start, n_days in (("2024-01-01", 60), ("2025-01-01", 5)):
+        for ts in hourly_timestamps(start, n_days * 24):
+            rows.append([ts, 1.0, 0.5, 2.0])  # noqa: PERF401
+    path = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    _, report = load_energy_data(path, GRID_MAPPING, timezone="Europe/Rome")
+
+    assert report.days_analyzed == 65, "days must count readings, not the span they straddle"
+    assert report.seasonality_warning is True, "65 days is not a year and must say so"
+    assert report.gaps_count == 1
+
+
+def test_days_analyzed_is_unchanged_on_continuous_data(tmp_path: Path) -> None:
+    """The fix must move no correct result: with no gap, coverage == span."""
+    rows: list[Sequence[object]] = [
+        [ts, 1.0, 0.5, 2.0] for ts in hourly_timestamps("2024-03-01", 90 * 24)
+    ]
+    path = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    _, report = load_energy_data(path, GRID_MAPPING, timezone="Europe/Rome")
+
+    assert report.days_analyzed == 90

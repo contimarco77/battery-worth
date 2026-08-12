@@ -20,6 +20,7 @@ import textwrap
 import warnings
 from pathlib import Path
 from typing import Annotated, NoReturn
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
 import typer
@@ -121,6 +122,15 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
         DEFAULT_PV_COL
     ),
     col_consumption: Annotated[str | None, typer.Option(help="Consumption column name")] = None,
+    cumulative: Annotated[
+        bool | None,
+        typer.Option(
+            "--cumulative/--no-cumulative",
+            help="Force how the energy columns are read: --cumulative treats them as "
+            "running meter totals (differenced), --no-cumulative as per-interval energy. "
+            "Omit to auto-detect per column.",
+        ),
+    ] = None,
     # --- output ---
     output: Annotated[
         Path | None,
@@ -162,6 +172,8 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     except ValueError as exc:
         _fail(f"Invalid battery parameters: {exc}")
 
+    _check_timezone(timezone)
+
     header = _read_header(data)
     mapping = _resolve_mapping(
         header=header,
@@ -178,7 +190,7 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         try:
-            df, report = load_energy_data(data, mapping, timezone=timezone)
+            df, report = load_energy_data(data, mapping, timezone=timezone, cumulative=cumulative)
             result = run_analysis(
                 df,
                 report,
@@ -337,6 +349,24 @@ def _build_tariff(  # noqa: PLR0913, PLR0917 - one parameter per CLI tariff flag
         )
     except ValueError as exc:
         _fail(f"Invalid tariff configuration: {exc}")
+
+
+def _check_timezone(timezone: str) -> None:
+    """Reject an unknown --timezone here, where the message can name the flag.
+
+    `ZoneInfoNotFoundError` subclasses `KeyError`, so an unknown zone otherwise
+    surfaced through the ingest error path as "Could not read '<file>': ...",
+    blaming the user's CSV for a typo in a flag and sending them to inspect a file
+    that is fine.
+    """
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        _fail(
+            f"Unknown timezone '{timezone}' passed to --timezone. Use an IANA name such as "
+            "'Europe/Rome', 'Australia/Sydney' or 'America/New_York'. This must be the "
+            "timezone your data's timestamps are written in, not necessarily where you live."
+        )
 
 
 def _read_header(path: Path) -> list[str]:
@@ -544,7 +574,10 @@ def _print_scenarios(result: AnalysisResult) -> None:
 
 def _scenario_row(scenario: ScenarioResult, years: float) -> str:
     label = "baseline" if scenario.capacity_kwh == 0 else f"{scenario.capacity_kwh:g} kWh"
-    savings_per_year = scenario.savings_eur / years
+    # `annual_savings_eur`, never a local `savings_eur / years`: the model owns this
+    # conversion because `payback_years()` divides by it, and a second copy of the
+    # arithmetic here is the exact shape that produced the period-vs-annual payback bug.
+    savings_per_year = scenario.annual_savings_eur
     cycles_per_year = scenario.battery_cycles / years
 
     payback = scenario.payback_years()
@@ -605,6 +638,9 @@ def _print_limits() -> None:
         "Hourly netting: sub-hourly data is summed to hourly before simulating, so "
         "surplus and deficit within the same hour cancel out. This slightly "
         "understates what a battery would do — a conservative direction.",
+        "Missing periods count as zero energy: any interval the data does not cover "
+        "is simulated as zero consumption and zero production, not as an average of "
+        "the hours around it. A gappy export understates both.",
     ):
         echo(_wrap(f"  - {line}", width=76, indent="    "))
     echo("")

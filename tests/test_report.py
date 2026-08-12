@@ -179,8 +179,25 @@ def test_limits_states_every_required_caveat_in_plain_language() -> None:
         "Naive payback",
         "Hourly netting",
         "Period analysed",
+        "Missing periods count as zero energy",
     ):
         assert phrase in limits, f"limits section does not state: {phrase}"
+
+
+def test_limits_states_the_zero_fill_rule_even_when_the_data_has_no_gaps() -> None:
+    """The gap treatment is a modelling assumption, not an incident report.
+
+    Ingest warns about it only when it finds a gap, and that warning is attached to a
+    run. Limits & assumptions describes how the tool works regardless — a reader
+    deciding whether to trust these numbers on *their* data needs to know that missing
+    intervals count as zero before they have a file with a hole in it. This fixture is
+    continuous and the sentence must still be there.
+    """
+    markdown = render_report(build_result(), FLAT_TARIFF)
+    limits = markdown.split("## Limits & assumptions")[1]
+
+    assert "Warnings" not in markdown, "this fixture is continuous — no gap warning to lean on"
+    assert "zero consumption and zero production" in limits
 
 
 def test_full_year_limits_says_seasonality_is_captured() -> None:
