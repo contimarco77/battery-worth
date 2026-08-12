@@ -48,6 +48,19 @@ battery-worth = "battery_worth.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["src/battery_worth"]
 
+[tool.pytest.ini_options]
+# `scripts` is on the import path because ha_export.py is a standalone tool, not
+# part of the package: its tests import it by module name. Declared here rather
+# than patched into sys.path inside the test file, so pytest, mypy and the
+# editor's language server all resolve it the same way.
+pythonpath = ["scripts"]
+testpaths = ["tests"]
+
+[tool.pyright]
+# Same reason as pythonpath above: without this the editor cannot resolve
+# `import ha_export` even though pytest and mypy can.
+extraPaths = ["scripts"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

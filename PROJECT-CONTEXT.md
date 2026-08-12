@@ -115,9 +115,14 @@ precisely so the test suite is type-checked rather than silently degraded to `An
   - [x] seasonal aggregates (`SeasonalAnalysis`, per-month or per-season)
   - [x] jinja2 report (4 sections) — `report.py` + `templates/report.md.j2`, `--output`
   - [x] PNG summary card — `card.py`, written beside `--output`, skipped with `--no-card`
-- [ ] Milestone 3
+- [ ] **Milestone 3 in progress**:
+  - [x] `scripts/ha_export.py` — standalone Home Assistant export (see the section
+    below; the HA "parser" is a separate script, not an ingest path)
+  - [ ] optional LLM layer
+  - [ ] README with real card screenshot
+  - [ ] Dockerfile (multi-stage), launch posts
 
-**Milestone 2 is closed.** Suite: 242 tests passing, all four gates clean
+**Milestone 2 is closed.** Suite: 318 tests passing, all four gates clean
 (see "Definition of done").
 
 ## Validated invariants
@@ -465,6 +470,59 @@ Rules that follow, and that a reviewer should enforce:
 - Unit sanity: warns if median price > 5 or < 0.001 EUR/kWh, since day-ahead data
   (PUN) is published in EUR/MWh and pasting it raw is a silent 1000x error.
 
+## Home Assistant export (decided, with rationale)
+
+- **battery-worth does NOT integrate with Home Assistant. It ships a separate
+  script.** `scripts/ha_export.py` runs once against the user's own instance and
+  writes the canonical CSV `ingest.py` already accepts. Three reasons, in order of
+  weight: the "100% offline" claim stays true **without asterisks**, which is a
+  positioning claim the README makes and must not have to qualify; `ingest.py`
+  gains no network and no auth surface; and if HA's API changes, **one script
+  breaks rather than the tool**. If direct integration is ever asked for, this
+  script is the logic ready to be promoted — the decision is reversible in that
+  direction and not in the other.
+- **The Energy Dashboard CSV export was evaluated and rejected as a target.** It is
+  transposed (timestamps as columns), its resolution depends on what the user had
+  selected in the UI, and it carries two confirmed upstream bugs (a UTC/local offset
+  in the header, and monthly exports off by one day). Do not build against it. The
+  README says so explicitly, because it is the button a user will find first.
+- **Standard library only — no new dependency, and no optional extra either.** The
+  two allowed options were stdlib or `battery-worth[ha]`; stdlib won because the
+  needed client surface is tiny and one-directional (connect, auth, send N requests,
+  read N replies, close), and none of the hard parts of WebSocket apply — no
+  streaming backpressure, no permessage-deflate, no subprotocol negotiation, no
+  concurrent readers. An extra would have put an install step in front of exactly
+  the users this script exists to serve. The cost is ~120 lines of hand-written
+  RFC 6455 framing, which is contained by keeping `encode_frame`/`decode_frame` pure
+  and testing them directly rather than trusting an end-to-end run that never
+  happens in CI.
+- **`types: ["change"]`, so there is no cumulative diffing anywhere.** `change` is
+  the per-interval delta; `sum` is the cumulative total at period end. A test feeds
+  a payload carrying **both** and asserts only `change` is read, so a future edit
+  cannot quietly start diffing a running total.
+- **Statistic timestamps are epoch MILLISECONDS and mark the START of the period.**
+  Both are pinned by tests, and both are the kind of assumption that fails silently:
+  ms read as seconds lands in the year 55943, and an interval-ENDING reading would
+  shift every row by an hour against `ingest.py`'s interval-starting convention.
+  ISO strings are also accepted, for cores old enough to emit them.
+- **Chunked by calendar month, because HA can cap or time out on a year in one
+  call.** Windows are half-open and contiguous — each ends exactly where the next
+  begins — and `merge_rows` de-duplicates on top of that, so an instance that treats
+  its own `end_time` as inclusive cannot double-count a boundary hour.
+- **The token is never logged, echoed, or written to disk.** `HA_TOKEN` is the
+  documented path and `--token` the fallback, because a token passed as a flag lands
+  in shell history. The help text says that outright rather than leaving it implied,
+  and a test asserts the token never appears in an error message.
+- **A wrong statistic_id and an empty period look identical from the response**, so
+  on an empty result the script asks HA for `recorder/list_statistic_ids` and prints
+  what the instance actually has. That call is best-effort: it only ever improves an
+  error message, so it never turns a failed export into a second failure.
+- **Two output defects were found by running the script, not by the suite** — the
+  same split as the card. Multi-line errors were prefixed `error:` on every line, so
+  one failure read as five; and progress printed *after* the error that stopped it,
+  because stdout is block-buffered when piped while stderr is not. Both are invisible
+  to a test that inspects an exception, and both are what the user actually reads.
+
 ## Test fixture
 
 Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
@@ -787,3 +845,42 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   the sixth differs only in three docstrings where the formatter inserted a space after
   the opening `"""` on strings whose text begins with a quote character (`""""Pays` →
   `""" "Pays`), a required disambiguation that touches no assertion.
+- **2026-08-12** — **Home Assistant export, as a standalone script rather than an
+  integration.** `scripts/ha_export.py` + 76 tests. Suite 242 → 318, all four gates
+  clean, and `mypy --strict` clean on the script and its tests as well as on `src/`.
+  The decision and its rationale are in the new "Home Assistant export" section; the
+  short version is that the offline claim stays unqualified and `ingest.py` gains no
+  network or auth surface.
+
+  *No new dependency, not even an optional extra.* The WebSocket client is ~120 lines
+  of stdlib RFC 6455. That is the part of this change most likely to be wrong, so the
+  framing is kept pure (`encode_frame` / `decode_frame` over bytes, no socket) and
+  tested directly — including the 7/16/64-bit length boundaries, partial buffers, and
+  the unmasked server-to-client direction. Nothing in the suite mocks a socket, per
+  the brief: every test drives a pure function with a recorded-shape payload.
+
+  *The format assumptions are the tests worth having.* Epoch **milliseconds** (read as
+  seconds, 2024-01-01 becomes the year 55943), interval-**starting** timestamps that
+  must not be shifted, and `change` rather than `sum` — with one payload carrying both
+  fields to pin that no cumulative diffing creeps back in. Each of these fails
+  silently rather than loudly, which is the argument for asserting them at all.
+
+  *Verified end to end without an instance*, by generating a synthetic year in HA's
+  exact wire shape and pushing it through the real parsing and CSV writer: 12 monthly
+  chunks → 8784 rows (2024 is a leap year), every consecutive pair exactly 3600 s
+  apart, no gaps and no duplicated boundary hour. The resulting CSV feeds
+  `battery-worth analyze` with no intermediate step — schema auto-detected as
+  `grid_centric`, 366 days, native resolution read as 60 min. That round trip is what
+  the whole design rests on, so it was worth running rather than assuming.
+
+  *Two defects came from running the script, not from the suite.* Multi-line errors
+  were prefixed `error:` on every line, so a single failure read as five separate
+  ones; and progress output landed *after* the error that stopped it, because stdout
+  is block-buffered when piped while stderr is not. Both are in what the user reads
+  rather than in what the code computes — the same blind spot sessions (6) and (9)
+  documented for the card, now confirmed to apply to terminal output too. **A test
+  that inspects an exception object cannot see how the message is printed.**
+
+  **Next: the rest of Milestone 3** — optional LLM layer, README card screenshot,
+  Dockerfile, launch posts. Per session (3)'s standing note, the launch posts depend
+  on the README, which now has the HA section but still not the screenshot.
