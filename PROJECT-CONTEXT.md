@@ -59,6 +59,39 @@ inbound senior-rate consulting. No active selling.
     on reach, while the README — which every visitor reads and which the launch
     posts depend on — does not exist yet.
   - Shipping it in v0.2 buys a second launch post on the same channels.
+- **Liability position: Apache 2.0 unmodified, a plain-language README disclaimer,
+  one line on the card, and a lawyer before launch.** Four parts, decided together
+  because each covers a channel the others do not reach:
+  - **The licence text is not edited.** Sections 7 and 8 (Disclaimer of Warranty,
+    Limitation of Liability) are the industry-standard wording and are the
+    substantive protection. Editing them weakens the protection and creates
+    licence-compatibility problems; anything project-specific goes in the README
+    instead. Same licence as `solar-report`, deliberately.
+  - **The README carries a `## Disclaimer` section**, in prose: this is a
+    retrospective estimate and not financial or energy advice; results depend
+    entirely on the quality of the data the user supplies; the model ignores
+    battery degradation, energy price inflation, incentives and installation
+    costs; verify with a professional before any purchase. "Limits & assumptions"
+    is the technical half of the same statement and stays where it is — the
+    Disclaimer is the plain-language half and does not replace it.
+  - **One liability line in the card footer.** The card travels without the README,
+    without the licence and without context, so it needs its own line. Subject to
+    the footer's existing space constraint — see the Summary card section, where
+    the 2026-08-12 (3) entry records that the footer gets three seconds and every
+    line competes with the verdict.
+  - **A lawyer reviews the disclaimer wording before launch.** An open external
+    dependency, not a task that can be closed by writing better text.
+
+  This is locked rather than a nice-to-have because it is the same claim the
+  project is positioned on: the numbers are real and the limits are stated, and
+  the disclaimer is that claim in plain language. What a disclaimer cannot do
+  bounds how much weight it can carry — it cannot exclude criminal liability
+  anywhere, and under Italian law art. 1229 c.c. voids any advance exclusion of
+  liability for wilful misconduct or gross negligence. The protection that
+  actually matters is therefore **the tool not making unverified claims**, which
+  is why the counter-spike defect deferred to v0.2 must appear in "Limits &
+  assumptions" and not only in the roadmap: a README promising stated limits, over
+  a tool with an undocumented silent one, is weaker than no disclaimer at all.
 - **Viral vehicle**: shareable summary card (matplotlib PNG):
   "10 kWh → 611 €/year → payback 6.8 years". Designed to be screenshotted.
 - **Stack**: Python 3.11, pandas, pydantic v2, typer, jinja2, matplotlib,
@@ -137,6 +170,32 @@ precisely so the test suite is type-checked rather than silently degraded to `An
   - [ ] Dockerfile (multi-stage), launch posts
   - ~~optional LLM layer~~ — **deferred to v0.2**, not a v0.1 item
     (decision and rationale in "Locked decisions")
+  - ~~cumulative counter-spike detection~~ — **deferred to v0.2**, but the defect
+    must be visible in v0.1's "Limits & assumptions" (see below)
+
+**Deferred to v0.2, alongside the LLM layer: cumulative counter-spike detection.**
+A cumulative meter column can carry a stalled-counter spike — a run of identical
+readings followed by a jump that dumps the accumulated remainder into one interval.
+Measured on OPSD residential3: **803.94 kWh in a single hour, 13.9% of all import,
+no warning.** It moves payback by 0.1 years but distorts the self-consumption ratio
+by 3 points (35% → 32%), and self-consumption is a headline figure on the card.
+
+Three candidate signals, none needing an arbitrary constant:
+
+- **Last interval of a series** — catches both large spikes, since both are terminal
+  readings.
+- **Night-time PV** — a physical impossibility; catches 5 of 7, and structurally
+  cannot catch an import feed or a genuine daytime hour.
+- **Self-relative ratio against the feed's own p99.9** — a real cliff at
+  306x / 46.6x / 20.4x against a next-highest 7.4x across 68 feeds.
+
+An **absolute threshold is ruled out by measurement**: legitimate industrial feeds
+peak at 222 kWh/h, at 1.0-1.1x their own p99.9.
+
+This must also reach **"Limits & assumptions" when the README is written**, per the
+liability decision in "Locked decisions" — the disclaimer's protection is the tool
+not making unverified claims, so a known silent defect cannot live only in the
+roadmap.
 
 **Milestone 2 is closed.** Suite: 328 tests passing, all four gates clean
 (see "Definition of done").

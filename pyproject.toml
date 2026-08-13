@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Would a home battery have paid off for YOU? Retrospective what-if analysis from your real energy data (Home Assistant friendly)."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [{ name = "Marco" }]
+license = "Apache-2.0"
+authors = [{ name = "Marco Conti" }]
 keywords = ["home-assistant", "solar", "battery", "energy", "roi", "photovoltaic"]
 dependencies = [
     "pandas>=2.2",
