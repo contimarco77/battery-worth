@@ -277,7 +277,7 @@ consequence of the locked "downsample to hourly" decision.
 - Session (8): `payback_years()` divided cost by **period** savings instead of
   annual savings, overstating payback by 365/days — 6x on a 60-day file, printed
   directly beside the annualized savings figure that contradicted it.
-- Session (12): `_days_analyzed` measured the **calendar span** between the first and
+- The 2026-08-12 (2) session: `_days_analyzed` measured the **calendar span** between the first and
   last timestamp rather than the days actually covered. On a gappy file — 60 days of
   readings, a hole, 5 more days the following January — 65 days of data reported as
   371, so every per-year figure was 5.7x too small and every payback 5.7x too long
@@ -1014,7 +1014,7 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
 
   *Recorded, not started (post-launch decisions, not cleanups):* the trimmed real-data
   fixture (audit section 2 — the honest fix for the transcribed-anchor problem noted in
-  session (2) above), the duplicate "days" definition shared by simulator and ingest,
+  the 2026-08-12 (2) audit above), the duplicate "days" definition shared by simulator and ingest,
   and the `OSError` handler in `ha_export`.
 
   **Next: Dockerfile (multi-stage), then the README** with the real card screenshot
