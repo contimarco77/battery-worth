@@ -27,6 +27,8 @@ from battery_worth import PROJECT_NAME, REPO_URL
 from battery_worth.analysis import recommended_scenario
 from battery_worth.ingest import DEFAULT_TIMEZONE
 from battery_worth.models import (
+    BATTERY_LIFETIME_YEARS,
+    HIGH_SELF_CONSUMPTION,
     AnalysisResult,
     AnalysisTimezone,
     ScenarioResult,
@@ -90,6 +92,14 @@ def render_report(
             seasonal=result.seasonal,
             seasonal_note=_seasonal_note(result),
             has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
+            pays_back_in_lifetime=best is not None and best.pays_back_within_lifetime(),
+            battery_lifetime_years=BATTERY_LIFETIME_YEARS,
+            # Only claim saturation as the cause when the data supports it; below the
+            # threshold there is surplus the battery does capture, and the reason the
+            # sums fail is the tariff spread rather than the roof.
+            high_self_consumption=(
+                best is not None and best.self_consumption_before >= HIGH_SELF_CONSUMPTION
+            ),
             tariff_description=describe_tariff(tariff),
             timezone=analysis_timezone.name,
             timezone_declared=analysis_timezone.declared,

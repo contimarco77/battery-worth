@@ -29,6 +29,7 @@ from battery_worth.analysis import recommended_scenario, run_analysis
 from battery_worth.card import render_summary_card
 from battery_worth.ingest import DEFAULT_TIMEZONE, load_energy_data
 from battery_worth.models import (
+    BATTERY_LIFETIME_YEARS,
     AnalysisResult,
     AnalysisTimezone,
     BatterySpec,
@@ -593,11 +594,19 @@ def _print_scenarios(result: AnalysisResult) -> None:
     best = recommended_scenario(result.scenarios)
     if best is not None:
         payback = best.payback_years()
-        verdict = (
-            f"  Best payback: {best.capacity_kwh:g} kWh at {payback:.1f} years"
-            if payback is not None
-            else f"  Best savings: {best.capacity_kwh:g} kWh"
-        )
+        # Three states, matching the card and the report exactly. "Best payback: 5
+        # kWh at 76.5 years" reads as a recommendation, and a payback past the
+        # battery's own life is not one — the terminal is the third place this
+        # verdict is stated, and all three have to state it the same way.
+        if best.pays_back_within_lifetime():
+            verdict = f"  Best payback: {best.capacity_kwh:g} kWh at {payback:.1f} years"
+        elif payback is not None:
+            verdict = (
+                f"  No payback within {BATTERY_LIFETIME_YEARS:.0f} years: "
+                f"shortest is {best.capacity_kwh:g} kWh at {payback:.1f} years"
+            )
+        else:
+            verdict = f"  Best savings: {best.capacity_kwh:g} kWh"
         echo(verdict)
 
 

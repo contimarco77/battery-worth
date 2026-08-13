@@ -8,11 +8,23 @@
 **No battery capacity in this sweep saved money.** Every simulated scenario left the
 household no better off than it is today, so on this data the answer is: not worth it.
 {% else %}
-{% if best.payback_years() is not none %}
+{% if pays_back_in_lifetime %}
 **{{ best.capacity_kwh | cap }} kWh · {{ best.savings_eur | annual(years) | eur }}/year · payback {{ best.payback_years() | years }}**
 
 That is the shortest payback in the sweep, not the largest saving — the biggest battery
 almost always saves the most in absolute terms while being the worse investment.
+{% elif best.payback_years() is not none %}
+**No capacity pays back within {{ battery_lifetime_years | round0 }} years.** The shortest is
+{{ best.capacity_kwh | cap }} kWh at {{ best.payback_years() | years }}, saving {{ best.savings_eur | annual(years) | eur }}/year — a return
+this battery is not expected to survive to deliver, since {{ battery_lifetime_years | round0 }} years is already the
+generous end of a home-battery warranty. On this data the answer is: not worth it at any
+size analysed.
+
+{% if high_self_consumption %}
+This house already self-consumes {{ best.self_consumption_before | pct }} of the solar it produces, so there is
+little surplus left for a battery to capture. The binding constraint is the roof and the
+load, not the capacity — a bigger battery does not fix it.
+{% endif %}
 {% else %}
 **{{ best.capacity_kwh | cap }} kWh · {{ best.savings_eur | annual(years) | eur }}/year**
 

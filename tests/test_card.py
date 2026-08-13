@@ -40,7 +40,12 @@ from battery_worth.card import (
     no_payback_statement,
     render_summary_card,
 )
-from battery_worth.models import AnalysisResult, Tariff, TariffKind
+from battery_worth.models import (
+    HIGH_SELF_CONSUMPTION,
+    AnalysisResult,
+    Tariff,
+    TariffKind,
+)
 from battery_worth.report import annualization_years, describe_tariff, render_report
 from tests.test_analysis import FLAT_TARIFF, TEMPLATE, make_report, make_solar_days
 
@@ -215,6 +220,198 @@ def test_single_capacity_headline_does_not_repeat_a_stat() -> None:
     assert f"{payback:.1f}" not in headline
     assert f"{payback:.1f} years" in card_text(figure)
     assert "only size analysed" in headline
+
+
+# --- A payback past the battery's life is not a payback ----------------------
+#
+# The card carried two definitions of "pays back". The panel dropped at 20 years,
+# because bars that long invert their own encoding; the headline asked only whether
+# any positive saving existed. On the OPSD residential6 house — savings of
+# 39/46/49 EUR against paybacks of 76.5/130.3/184.5 years — the card's largest text
+# said "5 kWh pays back fastest" directly above a sentence saying no capacity pays
+# back within 20 years, with the 5 kWh bar lit at full strength underneath.
+#
+# That house is the project's third headline finding, the one where the honest
+# verdict is that no battery helps and the constraint is the roof and the load. The
+# card is the artifact that travels without the README, and it stated the opposite
+# of the finding in the biggest text on the image.
+#
+# These tests assert on the emitted sentence and on the emphasis state, not on
+# which branch ran: the defect was a correct branch attached to a wrong sentence.
+
+
+def beyond_lifetime(pv_peak: float = 4.0, cost_per_kwh: float = 600.0) -> AnalysisResult:
+    """A sweep where every capacity saves money and none pays back inside 20 years.
+
+    `pv_peak` selects which of the two no-payback shapes is built. Left at the
+    default the household self-consumes a quarter of its PV, so real surplus exists
+    and the thin spread is what defeats the battery; lowered to 1.2 it already uses
+    83% of a small roof, which is the residential6 shape the headline explains.
+    """
+    return run_analysis(
+        make_solar_days(n_days=60, pv_peak=pv_peak),
+        make_report(days=365),
+        capacities=[0, 5, 10, 15],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=cost_per_kwh,
+    )
+
+
+def test_headline_does_not_recommend_a_size_that_never_pays_back() -> None:
+    """The exact defect: "pays back fastest" above "no capacity pays back".
+
+    The headline and the payback panel must apply one threshold. Reverting either
+    the `_within_lifetime` gate in `headline_for` or the shared predicate it calls
+    brings back "5 kWh pays back fastest" on a card whose own panel says otherwise.
+    """
+    result = beyond_lifetime()
+    batteries = [s for s in result.scenarios if s.capacity_kwh > 0]
+    assert all(s.annual_savings_eur > 0 for s in batteries), "savings must be positive"
+    assert not any(s.pays_back_within_lifetime() for s in batteries), (
+        "and nothing may pay back inside the horizon, or this tests the wrong shape"
+    )
+
+    headline = headline_for(result.scenarios)
+
+    assert "pays back fastest" not in headline
+    # No capacity may be named as a recommendation, in any wording.
+    for scenario in batteries:
+        assert f"{scenario.capacity_kwh:g} kWh" not in headline
+
+
+def test_headline_states_the_reason_rather_than_repeating_the_panel() -> None:
+    """The design decision, pinned: the headline explains, the sentence counts.
+
+    Both elements could carry the negative, and only one may. The sentence keeps it,
+    because it is the element carrying the *number* — dropping it to avoid a repeat
+    would cost the reader the figure that makes the verdict checkable. The headline
+    therefore says what the sentence cannot: why this house cannot pay a battery
+    back. Self-consumption appears nowhere else on the card, so this is new
+    information rather than the repeat the no-repeat rule forbids.
+    """
+    result = beyond_lifetime(pv_peak=1.2)
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    headline = max(figure.texts, key=lambda t: t.get_fontsize()).get_text()
+
+    baseline = next(s for s in result.scenarios if s.capacity_kwh > 0).self_consumption_before
+    assert f"{baseline:.0%}" in headline
+    assert "solar" in headline
+
+    # The two elements say different things, and the sentence keeps the figure.
+    statement = no_payback_statement([s for s in result.scenarios if s.capacity_kwh > 0])
+    assert statement is not None
+    assert statement != headline
+    assert "pays back within 20 years" in statement
+    assert "20 years" not in headline, "the horizon belongs to the sentence"
+
+
+def test_headline_does_not_blame_the_roof_when_the_house_is_not_saturated() -> None:
+    """The reason must be true, not merely available.
+
+    A household self-consuming a quarter of its PV has surplus the battery does
+    capture; the sums fail on the tariff spread instead. Claiming saturation here
+    would be a fabricated cause in the card's largest text — the same class of
+    overclaim as "5 kWh is enough for this house".
+    """
+    result = beyond_lifetime()
+    baseline = next(s for s in result.scenarios if s.capacity_kwh > 0).self_consumption_before
+    assert baseline < HIGH_SELF_CONSUMPTION, "this fixture must not be saturated"
+
+    headline = headline_for(result.scenarios)
+
+    assert "own solar" not in headline
+    assert f"{baseline:.0%}" not in headline
+    assert "wears out" in headline
+
+
+def test_a_partly_paying_sweep_is_not_described_as_a_single_capacity() -> None:
+    """ "The only size analysed" is a claim about the sweep, not about the threshold.
+
+    A regression introduced by the fix itself and caught by looking at the
+    regenerated cards, not by the suite. The single-capacity branch counted the
+    capacities that *pay back*; once that list was narrowed to those inside the
+    battery's life, a sweep of 5/10/15 kWh where only 5 kWh clears 20 years took the
+    branch and the headline read "5 kWh — the only size analysed" above a chart
+    showing three bars. The card contradicted its own picture again, one branch
+    over.
+
+    Mirrors OPSD residential4's shape: paybacks spread across the horizon rather
+    than clustered, so exactly one of the three clears it.
+    """
+    result = run_analysis(
+        make_solar_days(n_days=60, pv_peak=1.5),
+        make_report(days=365),
+        capacities=[0, 5, 10, 15],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=120.0,
+    )
+    batteries = [s for s in result.scenarios if s.capacity_kwh > 0]
+    within = [s for s in batteries if s.pays_back_within_lifetime()]
+    assert len(within) == 1, "one capacity inside the horizon"
+    assert len(batteries) > 1, "out of several analysed — the shape that broke"
+
+    headline = headline_for(result.scenarios)
+
+    assert "only size analysed" not in headline
+    assert headline == f"{within[0].capacity_kwh:g} kWh pays back fastest"
+
+
+def test_no_bar_is_emphasized_when_nothing_pays_back_in_time() -> None:
+    """Emphasis is a recommendation in ink, and follows the same threshold.
+
+    A lit bar under a headline that declined to recommend a size is the picture
+    contradicting the sentence — and the picture is what a reader takes in first.
+    Asserted on both panels, in the alpha the renderer actually set.
+    """
+    result = beyond_lifetime(pv_peak=1.2)
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+
+    panels = [axes for axes in figure.axes if bars_of(axes)]
+    assert panels, "the savings panel must still be drawn"
+    for axes in panels:
+        assert all(bar.get_alpha() != 1.0 for bar in bars_of(axes)), (
+            "no capacity is recommended, so no bar may be at full strength"
+        )
+        assert not [t for t in axes.texts if t.get_fontweight() == "bold"], (
+            "and no bar label may carry the emphasis either"
+        )
+
+
+def test_the_stat_row_does_not_call_a_dead_payback_a_payback() -> None:
+    """ "42.1 years / to pay back" states as a payback what the panel denies.
+
+    The third element on the same card, found by rendering the case rather than by
+    reading the code. The figure stays — it is real, and suppressing it would invite
+    the suspicion that nothing was computed — but the label carries the verdict.
+    """
+    figure = build_summary_card(beyond_lifetime(pv_peak=1.2), tariff=FLAT_TARIFF)
+    text = card_text(figure)
+
+    assert "never pays back" in text
+    assert "to pay back" not in text.replace("Years to pay back", "").replace(
+        "never pays back", ""
+    ), "the panel heading and the negative label are the only 'pay back' phrases left"
+
+
+def test_card_and_report_agree_on_whether_a_run_pays_back() -> None:
+    """One run, two artifacts, one verdict.
+
+    The report's Verdict said "5 kWh · payback 76.5 y / That is the shortest payback
+    in the sweep" for the same data whose card said no capacity pays back. Two
+    artifacts of one run disagreeing is worse than either being wrong alone, because
+    the reader has no way to tell which to believe.
+    """
+    result = beyond_lifetime(pv_peak=1.2)
+    card = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+    report = render_report(result, FLAT_TARIFF)
+
+    assert "shortest payback in the sweep" not in report
+    assert "No capacity pays back within 20 years" in report
+    # Both name the negative, and neither recommends a size.
+    assert "pays back within 20 years" in card
+    assert "pays back fastest" not in card
 
 
 def test_savings_and_payback_are_subordinate_to_the_headline() -> None:

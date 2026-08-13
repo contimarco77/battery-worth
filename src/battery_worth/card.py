@@ -65,6 +65,7 @@ from matplotlib.ticker import FuncFormatter
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL
 from battery_worth.analysis import recommended_scenario
+from battery_worth.models import BATTERY_LIFETIME_YEARS, HIGH_SELF_CONSUMPTION
 from battery_worth.report import describe_tariff
 
 if TYPE_CHECKING:
@@ -150,12 +151,16 @@ _SIZE_WARNING = 14
 _SIZE_FOOTER = 13
 _SIZE_BRAND = 15
 
-# The horizon a payback has to fall inside to be worth plotting at all. 20 years
-# is the usual end of a home-battery warranty (most are 10 years or a throughput
-# figure; 20 is generous to the battery), so a payback beyond it is not a slow
-# return — it is a return the hardware is not expected to survive to deliver.
-# Past this, bars stop being the right encoding: see `_draw_no_payback_panel`.
-_BATTERY_LIFETIME_YEARS = 20.0
+# The payback horizon is the domain's, imported rather than redefined here. It was
+# a private constant in this module, which is how the defect it now guards against
+# happened: it existed only to decide whether bars were the right encoding (see
+# `_draw_no_payback_statement`), so the panel dropped at 20 years while
+# `headline_for` asked the weaker question — does any positive saving exist — and
+# answered "5 kWh pays back fastest" directly above a sentence saying nothing pays
+# back. One card, two definitions of "pays back", the larger text carrying the
+# wrong one. Every element that decides whether a payback exists — here and in the
+# report — now goes through `pays_back_within_lifetime`.
+_BATTERY_LIFETIME_YEARS = BATTERY_LIFETIME_YEARS
 
 # Within the horizon, a single outlier can still crowd the panel. This caps the
 # axis so the shorter bars stay comparable, with the true value labelled.
@@ -268,6 +273,21 @@ def _build(result: AnalysisResult, tariff: Tariff | None, repo_url: str) -> Figu
 # --- Headline ----------------------------------------------------------------
 
 
+def _within_lifetime(scenarios: list[ScenarioResult]) -> list[ScenarioResult]:
+    """The scenarios that pay back inside the battery's working life.
+
+    The single definition of "pays back" for the whole card. Every element that
+    branches on whether a payback exists asks this — the headline, the emphasis and
+    the panel-drop — because the defect this replaces was two of them asking
+    different questions and printing contradictory answers one above the other.
+
+    A payback of 76.5 years is not a slow payback. It is a payback the hardware is
+    not expected to live to deliver, which makes it arithmetic rather than a
+    finding, and no element of the card may treat it as one.
+    """
+    return [s for s in scenarios if s.pays_back_within_lifetime()]
+
+
 def headline_for(scenarios: list[ScenarioResult]) -> str:
     """The verdict sentence. Every word of it must be defensible from the card.
 
@@ -299,16 +319,29 @@ def headline_for(scenarios: list[ScenarioResult]) -> str:
     if not earning:
         return "No battery paid off here"
 
-    with_payback = [s for s in batteries if s.payback_years() is not None]
+    priced = [s for s in batteries if s.payback_years() is not None]
+    with_payback = _within_lifetime(batteries)
+
+    # Priced, earning, and still nothing pays back inside the battery's life. The
+    # panel below already says so and names the shortest figure, so the headline
+    # must not repeat it: the no-repeat rule that makes the single-capacity case
+    # say "the only size analysed" applies with more force here, because the
+    # sentence underneath is the element carrying the number.
+    #
+    # What the headline can say that the sentence cannot is *why*. A house already
+    # self-consuming 80% of its PV has almost nothing left for a battery to
+    # capture, so the binding constraint is the roof and the load rather than the
+    # capacity — a different fact from "no payback", not derivable from anything
+    # else on the card (self-consumption appears nowhere else on it), and the more
+    # useful half of the answer to a reader deciding what to do next.
+    if priced and not with_payback:
+        return _no_payback_reason(priced)
 
     # No cost supplied: no payback exists, so no size can be recommended. What the
     # data *does* show is where extra capacity stops buying anything, which is the
     # useful half of the answer and is visible in the panel below.
     if not with_payback:
-        knee = _saturation_knee(earning)
-        if knee is not None:
-            return f"Savings flatten beyond {_capacity_label(knee)}"
-        return f"Up to {_earning_max(earning):,.0f} EUR/year in savings"
+        return _saturation_headline(earning)
 
     # A single capacity supports no superlative — there is nothing to be best
     # against — and the headline says exactly that, which is the one thing about
@@ -323,12 +356,60 @@ def headline_for(scenarios: list[ScenarioResult]) -> str:
     # comparison behind this number — one size was analysed, so nothing on the card
     # says whether a different one would have done better. That caveat is invisible
     # in a stat row and changes how every figure below it should be read.
-    if len(with_payback) == 1:
-        only = with_payback[0]
+    #
+    # Counted over the capacities *analysed*, not the ones that clear the lifetime
+    # threshold. Those were the same list until the threshold arrived, and keying
+    # this off the filtered one made the card claim a sweep that did not happen:
+    # OPSD residential4 analysed 5/10/15 kWh, of which only 5 kWh pays back inside
+    # 20 years, and the headline read "5 kWh — the only size analysed" above a
+    # chart plainly showing three. The two comparisons this branch is about — was
+    # there a sweep, and does anything pay back — are different questions.
+    if len(priced) == 1:
+        only = priced[0]
         return f"{_capacity_label(only.capacity_kwh)} — the only size analysed"
 
     fastest = min(with_payback, key=lambda s: s.payback_years() or 0.0)
     return f"{_capacity_label(fastest.capacity_kwh)} pays back fastest"
+
+
+def _no_payback_reason(priced: list[ScenarioResult]) -> str:
+    """Why this house cannot pay a battery back, when none of them can.
+
+    Two shapes, because the reason genuinely differs and asserting the wrong one
+    would be a fabricated finding in the card's largest text.
+
+    **Already self-consuming most of its PV.** There is barely any surplus left for
+    a battery to capture, so the ceiling is the roof and the load. This is the
+    project's own third headline finding, and stating it is more useful than
+    repeating the negative the sentence below already carries.
+
+    **Not self-consuming much, and still no payback.** Then the surplus exists and
+    the battery does capture it — the savings are simply too small against the cost
+    for the spread on this tariff. Claiming saturation here would be false, so the
+    headline names the horizon instead. The sentence below still supplies the
+    shortest figure, so this is not the repeat the first branch avoids: it says the
+    battery outlives its own return, which is the meaning of the threshold rather
+    than the number that tripped it.
+    """
+    baseline = max(s.self_consumption_before for s in priced)
+    if baseline >= HIGH_SELF_CONSUMPTION:
+        return f"Already using {baseline:.0%} of its own solar"
+    return "No size pays back before the battery wears out"
+
+
+def _saturation_headline(earning: list[ScenarioResult]) -> str:
+    """What to say when savings exist but no payback can rank them.
+
+    Reached when no battery cost was supplied. `recommended_scenario` would fall
+    back to the largest absolute savings, which recommends the biggest battery —
+    the exact trap this tool exists to expose — so the headline names no size and
+    reports where the curve flattens instead. With too few points to find a knee,
+    it falls back again to the plain best figure.
+    """
+    knee = _saturation_knee(earning)
+    if knee is not None:
+        return f"Savings flatten beyond {_capacity_label(knee)}"
+    return f"Up to {_earning_max(earning):,.0f} EUR/year in savings"
 
 
 def _earning_max(earning: list[ScenarioResult]) -> float:
@@ -522,7 +603,22 @@ def _draw_stats(
         )
         stats = [(f"{best.annual_savings_eur:,.0f} EUR", savings_label)]
     if best.battery_cost_eur is not None:
-        stats.append((_payback_label(payback), "to pay back"))
+        # The label carries the verdict, because the number alone cannot. "42.1
+        # years / to pay back" states as a payback the very figure the panel below
+        # is declaring not to be one — the same contradiction as the headline, one
+        # element further down, and found by rendering the case rather than by
+        # reading the code. The figure itself stays: it is real, the reader wants
+        # it, and suppressing it would invite the suspicion that nothing was
+        # computed. Only the claim attached to it changes.
+        # Kept inside its column. The stat labels sit on a 0.30 fixed grid, so a
+        # label long enough to spell the reasoning runs straight through the next
+        # column's — which is how the first attempt at this rendered, printing
+        # "past the battery's 20-year life" over "battery cost". The short form
+        # carries the whole claim: "never pays back" is the verdict, and the
+        # sentence below the savings panel supplies the horizon it is measured
+        # against.
+        payback_label = "to pay back" if best.pays_back_within_lifetime() else "never pays back"
+        stats.append((_payback_label(payback), payback_label))
         stats.append((f"{best.battery_cost_eur:,.0f} EUR", "battery cost"))
 
     baseline = top - 0.012
@@ -647,8 +743,7 @@ def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coord
     #   shortest. A chart that misstates its own values is worse than no chart.
     # - No payback at all (no cost, or no positive savings): nothing to say that
     #   the headline has not already said, so the savings panel takes the height.
-    within_lifetime = [p for p in paybacks if p <= _BATTERY_LIFETIME_YEARS]
-    mode = "bars" if within_lifetime else ("sentence" if paybacks else "none")
+    mode = "bars" if _within_lifetime(scenarios) else ("sentence" if paybacks else "none")
 
     # Between the panels: the lower panel's own title, plus a breathing gap.
     gap = _PANEL_TITLE_SPACE + 0.022 if mode == "bars" else 0.0
@@ -681,8 +776,13 @@ def _emphasized_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult | No
     sweep directly under a headline that has just declined to recommend a size —
     the picture contradicting the sentence, and picking the louder of the two.
     With no payback anywhere, no bar is emphasized.
+
+    "No payback" means `_within_lifetime`, not merely "the division returned a
+    number". A 76.5-year payback lit a bar at full strength while the panel beside
+    it said nothing pays back — the same split as the headline, in the encoding the
+    reader takes in first.
     """
-    if not any(s.payback_years() is not None for s in scenarios):
+    if not _within_lifetime(scenarios):
         return None
     return recommended_scenario(scenarios)
 
@@ -868,7 +968,12 @@ def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
     cap = _payback_cap(finite)
 
     positions = list(range(len(scenarios)))
-    best = recommended_scenario(scenarios)
+    # The same emphasis rule as the savings panel, through the same helper, rather
+    # than `recommended_scenario` directly. This panel only draws when something
+    # pays back inside the horizon, so the two agree today — but they agreed by
+    # coincidence of the caller, and one bar lit under a headline recommending no
+    # size is exactly the contradiction being fixed here.
+    best = _emphasized_scenario(scenarios)
     drawn = [min(p, cap) if p is not None else 0.0 for p in paybacks]
 
     bars = axes.bar(

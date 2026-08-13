@@ -107,6 +107,37 @@ def test_payback_shown_when_cost_given(meter_csv: Path) -> None:
     assert "Best payback" in result.output
 
 
+def test_terminal_verdict_does_not_recommend_a_payback_past_the_battery_life(
+    meter_csv: Path,
+) -> None:
+    """ "Best payback: 5 kWh at 76.5 years" reads as a recommendation. It is not one.
+
+    The terminal summary is the third place this verdict is stated, after the card
+    and the report, and it is the one every user sees — `--output` is optional and
+    `--no-card` exists, but this always prints. All three had to be fixed together
+    or the tool would contradict itself between its own outputs.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "analyze",
+            str(meter_csv),
+            "--capacities",
+            "5,10",
+            "--flat-price",
+            "0.25",
+            "--battery-cost-per-kwh",
+            "9000",
+            "--no-card",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Best payback" not in result.output
+    assert "No payback within 20 years" in result.output
+    assert "shortest is 5 kWh" in result.output
+
+
 def test_missing_file_is_user_error(tmp_path: Path) -> None:
     result = runner.invoke(app, ["analyze", str(tmp_path / "nope.csv"), "--flat-price", "0.25"])
 

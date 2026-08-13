@@ -22,6 +22,24 @@ from pydantic import BaseModel, Field, model_validator
 # model it presents.
 DAYS_PER_YEAR = 365.0
 
+# The horizon a payback has to fall inside to count as a payback at all. 20 years is
+# the generous end of a home-battery warranty — most are 10 years or a throughput
+# figure — so a return past it is not a slow return but one the hardware is not
+# expected to survive to deliver.
+#
+# A domain constant rather than a rendering one, because "does this pay back" is a
+# question about the finding and not about the picture. It lived in `card.py` while
+# the report had no notion of it at all, so the two artifacts of one run could and
+# did state opposite verdicts.
+BATTERY_LIFETIME_YEARS = 20.0
+
+# Baseline self-consumption at or above which "this house already uses its own solar"
+# is an honest explanation for a battery not paying back. Set at two thirds: below
+# that there is real surplus still going to the grid, so the roof is not the binding
+# constraint and naming it as one would be inventing a cause. Shared by the card's
+# headline and the report's verdict so the two cannot explain one run differently.
+HIGH_SELF_CONSUMPTION = 0.66
+
 
 def annualization_years(days: int) -> float:
     """The divisor that turns a whole-period total into a per-year figure.
@@ -240,6 +258,25 @@ class ScenarioResult(BaseModel):
         if self.battery_cost_eur is None or self.annual_savings_eur <= 0:
             return None
         return self.battery_cost_eur / self.annual_savings_eur
+
+    def pays_back_within_lifetime(self) -> bool:
+        """Whether this capacity pays back before the hardware is expected to fail.
+
+        The domain's single answer to "does this pay back", and every consumer must
+        ask *this* rather than testing `payback_years() is not None`. That weaker
+        test treats a 76.5-year payback as a payback, and the two questions diverging
+        is not a hypothetical: the card's headline asked the weaker one and announced
+        "5 kWh pays back fastest" directly above its own panel saying no capacity pays
+        back within 20 years, on a house whose honest verdict is that no battery
+        helps.
+
+        Lives on the model, beside the division it qualifies, because it is a
+        judgement about what the number *means* — and the presentation layers must
+        not each carry their own copy of it, which is exactly how the card and the
+        report came to disagree about one run.
+        """
+        payback = self.payback_years()
+        return payback is not None and payback <= BATTERY_LIFETIME_YEARS
 
 
 class ExportPricePoint(BaseModel):
