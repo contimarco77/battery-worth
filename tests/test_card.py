@@ -1119,6 +1119,85 @@ def test_the_replacement_sentence_names_the_capacity_that_achieves_it() -> None:
     assert f"at {fastest.capacity_kwh:g} kWh" in statement
 
 
+def test_every_drop_path_gives_the_savings_panel_the_same_height() -> None:
+    """One rule, one code path: the panel dropped means the height is reallocated.
+
+    Three separate reasons drop the payback panel — no battery cost, no positive
+    savings anywhere, and every payback past the battery's life — and the rule is
+    the same for all of them. The beyond-lifetime drop was added last and reallocated
+    nothing: it subtracted a whole statement band from the panel *and* left it pinned
+    above the footer, so ~15% of the card was empty surface while the other two drop
+    paths filled it.
+
+    Asserted on the axes' measured extents rather than on a mode flag, because the
+    flag was right in the defect: the branch was taken and the layout was not.
+    """
+    two_panel = build_summary_card(build(), tariff=FLAT_TARIFF)
+    drops = {
+        "no cost": build_summary_card(build(cost_per_kwh=None), tariff=FLAT_TARIFF),
+        "no positive savings": build_summary_card(
+            build(tariff=LOSING_TARIFF), tariff=LOSING_TARIFF
+        ),
+        "beyond lifetime": build_summary_card(beyond_lifetime(), tariff=FLAT_TARIFF),
+    }
+
+    for name, figure in drops.items():
+        assert len(figure.axes) == 1, f"{name}: the payback panel must be dropped"
+
+    heights = {name: f.axes[0].get_position().height for name, f in drops.items()}
+    tallest, shortest = max(heights.values()), min(heights.values())
+
+    # Both bounds below are stated in absolute figure fractions rather than in terms
+    # of `_STATEMENT_BAND`. Deriving them from the band makes the yardstick move with
+    # the thing under test: widening the band widens the tolerance exactly as fast as
+    # it widens the gap, so the defect stays inside its own allowance and the test
+    # cannot see it. The band is an implementation detail; the card is 1200px and the
+    # reader sees fractions of it.
+    #
+    # A sentence occupies two lines of text, so the paths that draw one may sit at
+    # most that much lower than the paths that do not.
+    two_lines = 0.075
+    assert tallest - shortest <= two_lines, f"the drop paths must share one layout, got {heights}"
+
+    # And each must reclaim the dropped panel: roughly the two-panel height twice
+    # over, less the gap that separated them. Anchored to what a reclaiming panel
+    # actually reaches, because a layout that shrank every drop path uniformly would
+    # still clear the two-panel figure while leaving the card empty.
+    shared = two_panel.axes[0].get_position().height
+    for name, height in heights.items():
+        assert height >= 2 * shared - two_lines, (
+            f"{name}: dropping the payback panel must reclaim its height "
+            f"({height:.4f} against {shared:.4f} per panel when both are drawn)"
+        )
+
+
+def test_the_dropped_panel_does_not_leave_the_card_empty_above_the_footer() -> None:
+    """The defect as the reader saw it: a short panel over a strip of blank surface.
+
+    A height assertion alone would pass if the panel merely floated higher, so this
+    pins the ink: whatever the lowest thing the chart draws is — the sentence when
+    there is one, the axis labels otherwise — it must come down near the footer rule
+    rather than stopping a sixth of a card short of it.
+    """
+    figure = build_summary_card(beyond_lifetime(), tariff=FLAT_TARIFF)
+    figure.canvas.draw()
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)  # attached when the card is built
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+
+    axes = figure.axes[0]
+    furniture = axes.get_tightbbox(renderer).transformed(figure.transFigure.inverted())
+    statement = [t for t in figure.texts if "pays back within" in t.get_text()]
+    assert statement, "the beyond-lifetime card carries the replacement sentence"
+
+    lowest = min([furniture.y0, *(t.get_position()[1] for t in statement)])
+    footer_rule = 0.106
+    assert lowest - footer_rule < 0.09, (
+        f"the chart stops {lowest - footer_rule:.3f} above the footer rule — "
+        "the dropped panel's height was not reclaimed"
+    )
+
+
 def test_paybacks_within_a_lifetime_are_still_drawn_as_bars() -> None:
     """The sentence is the exception, not a replacement for the panel."""
     figure = build_summary_card(build(), tariff=FLAT_TARIFF)

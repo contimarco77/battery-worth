@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from battery_worth.analysis import recommended_scenario, run_analysis
+from battery_worth.card import build_summary_card
 from battery_worth.models import (
     AnalysisResult,
     AnalysisTimezone,
@@ -21,6 +22,7 @@ from battery_worth.models import (
 )
 from battery_worth.report import annualization_years, render_report, write_report
 from tests.test_analysis import FLAT_TARIFF, TEMPLATE, make_report, make_solar_days
+from tests.test_card import beyond_lifetime, card_text
 from tests.test_seasonal import make_year
 
 FIXED_SECTIONS = (
@@ -345,6 +347,68 @@ def test_seasonal_section_describes_the_capacity_the_verdict_recommends() -> Non
     assert f"**{label}** battery — the one recommended above" in " ".join(seasonal.split())
     # The premise: the largest swept capacity is a different battery entirely.
     assert result.seasonal.capacity_kwh != 20.0
+
+
+def test_seasonal_framing_does_not_recommend_what_the_verdict_rejected() -> None:
+    """The sixth site of one split: `recommended_scenario` read as an endorsement.
+
+    Past the lifetime threshold it is only the least-bad size, so the Verdict says
+    the battery is not worth it at any size analysed while the Seasonal analysis
+    opened "the one recommended above, so these are the figures that would actually
+    be yours" — inviting the reader to treat as theirs a table the Verdict has just
+    told them not to buy.
+
+    Asserted on the rendered sentence, not on which branch ran: the last two rounds
+    of this defect were both a correct branch attached to a wrong sentence.
+    """
+    result = beyond_lifetime()
+    assert result.seasonal is not None
+    markdown = render_report(result, FLAT_TARIFF)
+    seasonal = " ".join(markdown.split("## Seasonal analysis")[1].split("## ")[0].split())
+
+    assert "the one recommended above" not in seasonal
+    assert "the figures that would actually be yours" not in seasonal
+    # The section itself stays: the monthly breakdown is what makes the verdict
+    # checkable period by period, so only the framing may change.
+    assert f"**{result.seasonal.capacity_kwh:g} kWh**" in seasonal
+    assert "not a size being recommended" in seasonal
+
+
+def test_seasonal_framing_still_recommends_when_the_battery_pays_back() -> None:
+    """The honest negative must not leak into the case that does pay back."""
+    result = run_analysis(
+        make_year(),
+        make_report(),
+        capacities=[0, 5, 10, 20],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
+    )
+    seasonal = " ".join(
+        render_report(result, FLAT_TARIFF).split("## Seasonal analysis")[1].split("## ")[0].split()
+    )
+
+    assert "the one recommended above" in seasonal
+    assert "not a size being recommended" not in seasonal
+
+
+def test_report_and_card_agree_on_the_seasonal_framing_too() -> None:
+    """Extends the existing one-run-one-verdict pin to the section that drifted.
+
+    The Verdict, the card and the seasonal intro are three statements of one
+    finding. Two of them were locked together in the last round; this is the third,
+    so the pair cannot drift apart again on the section nobody had listed.
+    """
+    result = beyond_lifetime()
+    markdown = render_report(result, FLAT_TARIFF)
+    card = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+    seasonal = " ".join(markdown.split("## Seasonal analysis")[1].split("## ")[0].split())
+
+    # All three carry the same negative, and none of them names a recommendation.
+    assert "No capacity pays back within 20 years" in markdown
+    assert "pays back within 20 years" in card
+    assert "the one recommended above" not in seasonal
+    assert "pays back fastest" not in card
 
 
 def test_seasonal_section_keeps_the_ceiling_as_one_sentence() -> None:

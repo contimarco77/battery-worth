@@ -82,8 +82,15 @@ the less there is to gain by storing it instead.
 {% if seasonal %}
 ## Seasonal analysis
 
+{% if pays_back_in_lifetime %}
 Per-{{ seasonal.granularity }} behaviour of the **{{ seasonal.capacity_kwh | cap }} kWh** battery — the one recommended above,
 so these are the figures that would actually be yours.
+{% else %}
+Per-{{ seasonal.granularity }} behaviour of the **{{ seasonal.capacity_kwh | cap }} kWh** battery — the shortest payback in
+the sweep, and so the most favourable case, not a size being recommended. It is broken
+down here because it is what makes the verdict above checkable {{ seasonal.granularity }} by
+{{ seasonal.granularity }}: even the best of the sizes analysed leaves the surplus below.
+{% endif %}
 
 | {{ "Month" if seasonal.granularity == "month" else "Season" }} | PV | Consumption | Self-cons. | Unused surplus | Grid import left | Savings |
 |---|---:|---:|---:|---:|---:|---:|
@@ -94,7 +101,8 @@ All figures in kWh for the period shown, savings in EUR, not annualized.
 
 **Unused surplus** is PV exported even with this battery in place: energy your roof
 produced, your home did not need, and **this** battery could not store — a larger one
-might have. **Grid import left** is demand that neither PV nor the battery covered.
+might have{% if not pays_back_in_lifetime %}, though on this data no size analysed pays for itself either way{% endif %}.
+**Grid import left** is demand that neither PV nor the battery covered.
 {% if not seasonal.is_ceiling %}
 Even the largest battery in this sweep ({{ seasonal.largest_capacity_kwh | cap }} kWh) would have left {{ seasonal.largest_capacity_unused_surplus_kwh | kwh }} kWh
 of surplus unused over the period — that part is a limit of the roof and the load,

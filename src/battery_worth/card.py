@@ -186,9 +186,14 @@ _PANEL_TITLE_SPACE = 0.048
 # Below this much vertical room the chart is dropped rather than squeezed: a panel
 # thinner than its own axis labels is worse than the white space it replaces.
 _MIN_CHART_HEIGHT = 0.10
-# Vertical band reserved for the sentence that replaces the payback panel: its
-# own heading, the sentence, and air around both.
-_STATEMENT_BAND = 0.115
+# Vertical band reserved for the sentence that replaces the payback panel: its own
+# heading, the sentence, and air around both. Measured from what the band actually
+# draws — a heading at `_PANEL_TITLE_SPACE` below the panel's furniture and a
+# sentence 0.038 under it — rather than being the height of the panel it replaces.
+# Those are different quantities, and sizing this one like the latter is what left
+# the beyond-lifetime card with a strip of empty surface above the footer: two
+# lines of text were given the room a whole panel needs.
+_STATEMENT_BAND = 0.068
 # The panel is laid out for at least this many capacity slots, so a one- or
 # two-capacity sweep produces narrow bars in a wide panel rather than slabs.
 _MIN_SLOTS = 4
@@ -745,26 +750,42 @@ def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coord
     #   the headline has not already said, so the savings panel takes the height.
     mode = "bars" if _within_lifetime(scenarios) else ("sentence" if paybacks else "none")
 
-    # Between the panels: the lower panel's own title, plus a breathing gap.
-    gap = _PANEL_TITLE_SPACE + 0.022 if mode == "bars" else 0.0
-    panels = 2 if mode == "bars" else 1
-    # The replacement sentence is not free space: it needs a band of its own below
-    # the savings panel, or it is drawn over the bars.
-    reserved = _STATEMENT_BAND if mode == "sentence" else 0.0
-    panel_height = (available - gap - reserved) / panels
-
-    savings_axes = figure.add_axes((_PLOT_LEFT, top - panel_height, _PLOT_WIDTH, panel_height))
-    _draw_savings_panel(savings_axes, scenarios, label_x=mode != "bars")
-
     if mode == "bars":
+        # Two panels sharing the height, separated by the lower panel's own title
+        # plus a breathing gap.
+        panel_height = (available - (_PANEL_TITLE_SPACE + 0.022)) / 2
+        savings_axes = figure.add_axes((_PLOT_LEFT, top - panel_height, _PLOT_WIDTH, panel_height))
+        _draw_savings_panel(savings_axes, scenarios, label_x=False)
         payback_axes = figure.add_axes((_PLOT_LEFT, bottom, _PLOT_WIDTH, panel_height))
         _draw_payback_panel(payback_axes, scenarios)
-    elif mode == "sentence":
-        # The savings panel now ends `_STATEMENT_BAND` higher; the sentence fills
-        # that band, starting below the panel's own x-axis labels and title.
-        _draw_no_payback_statement(
-            figure, scenarios, band_top=top - panel_height - _PANEL_TITLE_SPACE
-        )
+        return
+
+    # Every path that drops the payback panel is one layout, not one per reason.
+    # The savings panel takes the full height and labels the shared axis itself;
+    # the only thing that varies is whether a sentence is drawn under it.
+    #
+    # This is a single path because it kept being written as several. The rule —
+    # "either way the savings panel takes the full height" — was wired to the two
+    # original drop reasons (no cost, no positive savings), and the beyond-lifetime
+    # drop was added later as a third branch that reallocated nothing: it subtracted
+    # a whole `_STATEMENT_BAND` from the panel *and* pinned it to `bottom`, leaving
+    # ~15% of the card empty above the footer. The sentence needs a band *below* the
+    # panel, which is what `bottom` already provides — not a slice out of its height.
+    statement = no_payback_statement(scenarios) if mode == "sentence" else None
+    # The band is reserved only when something occupies it, so the two silent drop
+    # paths and this one end at the same height rather than differing by the size of
+    # a sentence one of them does not draw.
+    reserved = _STATEMENT_BAND if statement is not None else 0.0
+    panel_bottom = bottom + reserved
+    panel_height = top - panel_bottom
+
+    savings_axes = figure.add_axes((_PLOT_LEFT, panel_bottom, _PLOT_WIDTH, panel_height))
+    _draw_savings_panel(savings_axes, scenarios, label_x=True)
+
+    if statement is not None:
+        # Below the panel's own x-axis labels and title, inside the band reserved
+        # for it above the footer rule.
+        _draw_no_payback_statement(figure, statement, band_top=panel_bottom - _PANEL_TITLE_SPACE)
 
 
 def _emphasized_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult | None:
@@ -805,14 +826,13 @@ def no_payback_statement(scenarios: list[ScenarioResult]) -> str | None:
     )
 
 
-def _draw_no_payback_statement(
-    figure: Figure, scenarios: list[ScenarioResult], band_top: float
-) -> None:
-    """Render the replacement sentence where the payback panel would have been."""
-    statement = no_payback_statement(scenarios)
-    if statement is None:
-        return
+def _draw_no_payback_statement(figure: Figure, statement: str, band_top: float) -> None:
+    """Render the replacement sentence where the payback panel would have been.
 
+    Takes the resolved sentence rather than the scenarios, because whether one
+    exists is what decides the layout above: the caller has to know before it sizes
+    the savings panel, and asking twice is how the two could disagree.
+    """
     # Anchored to the top of its reserved band and drawn downwards, so the heading
     # sits clear of the savings panel's x-axis labels above it.
     figure.text(
