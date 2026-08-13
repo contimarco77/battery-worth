@@ -45,6 +45,20 @@ inbound senior-rate consulting. No active selling.
   numeric report, 100% offline. `--llm` flag adds natural-language commentary.
   Grounding rules identical to solar-report: the LLM comments ONLY on numbers
   computed by the engine, never its own estimates or comparisons.
+  **Deferred to v0.2 — out of v0.1 scope.** The design above stands; only the
+  timing changed. Five reasons, decided deliberately:
+  - The shareable card is the distribution vehicle, and LLM prose adds nothing
+    to a screenshot.
+  - "100% offline, no LLM" is an asset with the r/homeassistant and
+    r/selfhosted audience, and it is consistent with the reason
+    `ha_export.py` was built as a standalone script.
+  - solar-report is already the grounded-LLM project; keeping battery-worth
+    deterministic differentiates the pair instead of selling the same thing
+    twice.
+  - Grounding is the highest-risk component in the project and has zero effect
+    on reach, while the README — which every visitor reads and which the launch
+    posts depend on — does not exist yet.
+  - Shipping it in v0.2 buys a second launch post on the same channels.
 - **Viral vehicle**: shareable summary card (matplotlib PNG):
   "10 kWh → 611 €/year → payback 6.8 years". Designed to be screenshotted.
 - **Stack**: Python 3.11, pandas, pydantic v2, typer, jinja2, matplotlib,
@@ -94,8 +108,9 @@ precisely so the test suite is type-checked rather than silently degraded to `An
    capacity sweep. Tests on hand-verifiable synthetic data.
 2. **Economics & report**: tariffs (flat, F1/F2/F3, hourly CSV), savings + payback,
    jinja2 report (4 sections), PNG summary card.
-3. **Launch polish**: HA long-term statistics parser, optional LLM layer,
-   README with real card screenshot, Dockerfile (multi-stage), launch posts.
+3. **Launch polish**: HA long-term statistics parser, README with real card
+   screenshot, Dockerfile (multi-stage), launch posts. (The optional LLM layer
+   was originally scoped here; deferred to v0.2 — see "Locked decisions".)
 
 ## Current status
 
@@ -107,7 +122,7 @@ precisely so the test suite is type-checked rather than silently degraded to `An
   - [x] `simulator.py` — greedy simulator + `summarize_scenario`
   - [x] `analysis.py` — `run_analysis` capacity sweep, price series built once, capacity-0 baseline
   - [x] `cli.py` — `battery-worth analyze` wired end to end, plain-text output
-- [ ] **Milestone 2 in progress**:
+- [x] **Milestone 2 DONE**:
   - [x] `tariffs.py` — flat / F1-F2-F3 / hourly CSV → per-interval price series
     (built early — see the 2026-08-11 (2) session log entry)
   - [x] savings + payback (in `ScenarioResult`, surfaced by the sweep and the CLI table)
@@ -118,9 +133,10 @@ precisely so the test suite is type-checked rather than silently degraded to `An
 - [ ] **Milestone 3 in progress**:
   - [x] `scripts/ha_export.py` — standalone Home Assistant export (see the section
     below; the HA "parser" is a separate script, not an ingest path)
-  - [ ] optional LLM layer
   - [ ] README with real card screenshot
   - [ ] Dockerfile (multi-stage), launch posts
+  - ~~optional LLM layer~~ — **deferred to v0.2**, not a v0.1 item
+    (decision and rationale in "Locked decisions")
 
 **Milestone 2 is closed.** Suite: 328 tests passing, all four gates clean
 (see "Definition of done").
@@ -1000,3 +1016,8 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   fixture (audit section 2 — the honest fix for the transcribed-anchor problem noted in
   session (2) above), the duplicate "days" definition shared by simulator and ingest,
   and the `OSError` handler in `ha_export`.
+
+  **Next: Dockerfile (multi-stage), then the README** with the real card screenshot
+  and the "Why not battery_sim?" section, then launch posts. The optional LLM layer
+  is deferred to v0.2 — decision and rationale in "Locked decisions". Per the
+  standing note from 2026-08-11 (3), the launch posts depend on the README.
