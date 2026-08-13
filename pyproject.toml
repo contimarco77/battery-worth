@@ -18,6 +18,24 @@ dependencies = [
     # Easter Monday in the ARERA holiday calendar) rather than relying on it
     # transitively. Preferred over the `holidays` package: one function, no new wheel.
     "python-dateutil>=2.8.2",
+    # `zoneinfo` reads the operating system's tz database and falls back to this
+    # PyPI package when there is none. Windows ships none at all, so `zoneinfo`
+    # there depends on this package entirely; slim and distroless container bases
+    # are free to drop theirs, and a stripped-down CI runner may have none either.
+    # The F1/F2/F3 bands are defined in Europe/Rome, so wherever the database is
+    # missing `ZoneInfo("Europe/Rome")` raises `ZoneInfoNotFoundError` — which the
+    # CLI reports as an unknown `--timezone`, pointing the user at a flag they
+    # never set, for a zone that is in fact the default.
+    #
+    # Declared unconditionally rather than behind a `platform_system == "Windows"`
+    # marker: one code path everywhere, and the guarantee stops depending on which
+    # base image someone builds on. Note that `python:3.11-slim-bookworm`, this
+    # project's own image base, *does* ship /usr/share/zoneinfo — verified, and the
+    # band tariff runs there with this package removed. That makes this belt and
+    # braces for the image and load-bearing off it, which is the right trade for
+    # 350 kB: the failure it prevents is a wrong error message about a flag the
+    # user never touched.
+    "tzdata",
     "pydantic>=2.7",
     "typer>=0.12",
     "jinja2>=3.1",

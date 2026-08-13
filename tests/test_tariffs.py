@@ -10,6 +10,7 @@ Reference week: 2025-06-09 (Mon) .. 2025-06-15 (Sun) — deliberately holiday-fr
 
 import warnings
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -433,3 +434,34 @@ def test_hourly_csv_covers_spring_changeover(tmp_path: Path) -> None:
     assert prices.notna().all()
     assert prices.iloc[0] == pytest.approx(0.0)
     assert prices.iloc[-1] == pytest.approx(0.22)
+
+
+# ------------------------------------------------------------------- portability
+
+
+def test_the_italian_timezone_resolves_without_an_os_tz_database() -> None:
+    """Europe/Rome must be resolvable, whatever the platform ships.
+
+    `zoneinfo` reads the operating system's tz database and falls back to the
+    `tzdata` PyPI package when there is none. Windows has none at all; a slim or
+    distroless container base may drop its own. Where the database is missing,
+    `ZoneInfo("Europe/Rome")` raises `ZoneInfoNotFoundError`, which the CLI catches
+    as an unknown `--timezone` and reports by naming a flag the user never passed —
+    for what is in fact the default zone. The whole F1/F2/F3 tariff is defined here,
+    so a missing database takes out the band tariff entirely.
+
+    This passes trivially on any machine with a system tz database, including this
+    project's own `python:3.11-slim-bookworm` image, which does ship one. Its value
+    is entirely in the environments that do not — so it is a guard against a
+    platform, not an assertion about this one.
+    """
+    zone = ZoneInfo(ROME)
+    assert str(zone) == ROME
+
+    # Constructed and then actually used to price: resolving the zone is necessary
+    # but not sufficient, and the bands are what the zone exists to serve.
+    tariff = Tariff(kind=TariffKind.F1_F2_F3, f1_price=0.35, f2_price=0.30, f3_price=0.25)
+    prices = build_price_series(rome_index("2025-06-09", 24), tariff)
+
+    assert len(prices) == 24
+    assert set(prices.unique()) <= {0.35, 0.30, 0.25}
