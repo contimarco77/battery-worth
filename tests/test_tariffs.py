@@ -370,6 +370,35 @@ def test_hourly_csv_missing_file_raises() -> None:
         build_price_series(rome_index("2025-06-09", 2), tariff)
 
 
+def test_hourly_csv_mixed_offset_timestamps_raise_an_actionable_message(tmp_path: Path) -> None:
+    """Same defect as the energy CSV path, same obligation to the user.
+
+    The price file is the other place a locally-timestamped export lands, so it must
+    fail with the same explanation rather than with pandas' `utc=True` advice.
+    """
+    n = 6
+    idx = pd.date_range("2025-10-26 00:00", periods=n, freq="h", tz="UTC").tz_convert(ROME)
+    timestamps = [t.isoformat() for t in idx]
+    assert "+02:00" in timestamps[0] and "+01:00" in timestamps[-1], (
+        "fixture must span the changeover"
+    )
+    path = write_prices(tmp_path, timestamps, [0.10] * n)
+    tariff = Tariff(kind=TariffKind.HOURLY_CSV, hourly_prices_csv=str(path))
+
+    with pytest.raises(ValueError) as excinfo:
+        build_price_series(rome_index("2025-10-26 00:00", n), tariff)
+
+    msg = str(excinfo.value)
+    assert "'timestamp'" in msg
+    assert str(path) in msg
+    assert "mixes UTC offsets" in msg
+    assert "daylight-saving changeover" in msg
+    assert "--prices-timestamp-col" in msg
+    assert "utc=True" not in msg
+    assert "to_datetime" not in msg
+    assert "DatetimeIndex" not in msg
+
+
 def test_hourly_csv_wrong_column_names_raise(tmp_path: Path) -> None:
     path = write_prices(tmp_path, ["2025-06-09 00:00"], [0.10])
     tariff = Tariff(

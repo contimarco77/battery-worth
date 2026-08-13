@@ -46,7 +46,7 @@ def load_energy_data(
     """
     source_columns = _source_columns(mapping)
     raw = _read_csv(path, mapping, source_columns)
-    raw, warnings = _localize_and_sort(raw, timezone, mapping.timestamp)
+    raw, warnings = _localize_and_sort(raw, timezone, mapping.timestamp, path)
 
     cumulative_columns = _difference_cumulative_columns(raw, source_columns, cumulative, warnings)
 
@@ -205,10 +205,48 @@ def localize_index(index: pd.DatetimeIndex, timezone: str) -> tuple[pd.DatetimeI
         ]
 
 
+def parse_timestamp_column(values: pd.Series, column: str, path: Path, flag: str) -> pd.Series:
+    """Parse a CSV timestamp column, or raise with a message the user can act on.
+
+    Public because `tariffs` parses the hourly price CSV's timestamp column the same
+    way: both files reach this code from the same kind of export, and a user who hits
+    the mixed-offset case on one should read the same explanation on the other. `flag`
+    is the CLI option that selects the column for the file in hand, so the message can
+    name the fix exactly as the user would type it.
+
+    `errors="coerce"` turns unparseable *values* into NaT, which the caller reports.
+    It does NOT cover a column whose values each parse but carry differing UTC offsets
+    — the shape of any export written in local time across a DST changeover. That
+    makes `to_datetime` raise outright, before there is anything to test with
+    `.isna()`, so it is caught here and re-raised in the user's terms.
+
+    Deliberately does not pass `utc=True`: converting the user's timestamps to a common
+    zone would make the run succeed while silently reinterpreting the input, and a
+    wrong-but-successful run is worse than a clear failure.
+    """
+    try:
+        return pd.to_datetime(values, errors="coerce")
+    except ValueError as exc:
+        if "Mixed timezones" not in str(exc):
+            raise
+        msg = (
+            f"Column '{column}' in '{path}' mixes UTC offsets, so its timestamps do not "
+            "share one timezone. This is what an export written in local time looks like "
+            "across a daylight-saving changeover: the same clock hour is written once at "
+            "one offset and once at another. The file is usually still usable. If the "
+            "export also has a column in UTC (a single offset throughout, often named "
+            f"with 'utc'), point {flag} at that one — it is the unambiguous "
+            "input. Otherwise, re-export the column in UTC, or strip the offsets so the "
+            "timestamps are plain local wall-clock times (e.g. '2025-06-01T14:00:00'), "
+            "which are localized to the analysis timezone."
+        )
+        raise ValueError(msg) from exc
+
+
 def _localize_and_sort(
-    df: pd.DataFrame, timezone: str, timestamp_col: str
+    df: pd.DataFrame, timezone: str, timestamp_col: str, path: Path
 ) -> tuple[pd.DataFrame, list[str]]:
-    parsed = pd.to_datetime(df[timestamp_col], errors="coerce")
+    parsed = parse_timestamp_column(df[timestamp_col], timestamp_col, path, "--col-timestamp")
     if parsed.isna().any():
         n_bad = int(parsed.isna().sum())
         msg = (

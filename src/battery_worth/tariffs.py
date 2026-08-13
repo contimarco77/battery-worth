@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from dateutil.easter import easter
 
-from battery_worth.ingest import localize_index
+from battery_worth.ingest import localize_index, parse_timestamp_column
 from battery_worth.models import Tariff, TariffKind
 
 _ITALIAN_TIMEZONES = frozenset({"Europe/Rome", "Europe/Vatican", "Europe/San_Marino"})
@@ -224,7 +224,9 @@ def _read_price_csv(path: Path, timestamp_col: str, price_col: str) -> pd.Series
         msg = f"The hourly price CSV '{path}' has no data rows."
         raise ValueError(msg)
 
-    parsed = pd.to_datetime(df[timestamp_col], errors="coerce")
+    parsed = parse_timestamp_column(
+        df[timestamp_col], timestamp_col, path, "--prices-timestamp-col"
+    )
     if parsed.isna().any():
         n_bad = int(parsed.isna().sum())
         msg = (

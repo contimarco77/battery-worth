@@ -360,6 +360,46 @@ def test_dst_autumn_single_occurrence_hour(tmp_path: Path) -> None:
     assert any("daylight-saving" in w for w in report.warnings)
 
 
+def local_offset_timestamps(start: str, n: int) -> list[str]:
+    """n hourly stamps written in Europe/Rome local time, offsets included.
+
+    This is what an export written against a local clock looks like: across the
+    autumn changeover the offset flips from +02:00 to +01:00 mid-file, so the
+    column carries two different UTC offsets.
+    """
+    idx = pd.date_range(start, periods=n, freq="h", tz="UTC").tz_convert("Europe/Rome")
+    return [t.isoformat() for t in idx]
+
+
+def test_mixed_offset_timestamps_raise_an_actionable_message(tmp_path: Path) -> None:
+    """A local-time export across a DST changeover must not surface pandas' own error.
+
+    `to_datetime` raises on mixed offsets before returning anything, so the NaT check
+    below it never runs. The user must be told which file and column, what the offsets
+    mean, and what to do — not `utc=True` and `DatetimeIndex`.
+    """
+    n = 48
+    ts = local_offset_timestamps("2025-10-25 12:00", n)
+    assert "+02:00" in ts[0] and "+01:00" in ts[-1], "fixture must span the changeover"
+    imp, exp, pv = days_of_hourly_data(2)
+    rows = list(zip(ts, imp[:n], exp[:n], pv[:n], strict=True))
+    csv = write_csv(tmp_path, ["ts", "imp", "exp", "pv"], rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        load_energy_data(csv, GRID_MAPPING)
+
+    msg = str(excinfo.value)
+    assert "'ts'" in msg
+    assert str(csv) in msg
+    assert "mixes UTC offsets" in msg
+    assert "daylight-saving changeover" in msg
+    assert "--col-timestamp" in msg
+    # pandas' own vocabulary must not leak through.
+    assert "utc=True" not in msg
+    assert "to_datetime" not in msg
+    assert "DatetimeIndex" not in msg
+
+
 def test_unsorted_timestamps_are_sorted_before_localizing(tmp_path: Path) -> None:
     """Rows out of chronological order must still localize and come back ascending."""
     n = 31 * 24
