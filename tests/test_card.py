@@ -972,6 +972,36 @@ def test_packaging_metadata_matches_the_printed_url() -> None:
     assert urls["Issues"].startswith(REPO_URL)
 
 
+def test_the_image_label_names_the_same_repository() -> None:
+    """The Dockerfile's OCI source label is the third copy, and is pinned like the rest.
+
+    `org.opencontainers.image.source` is what a registry and every image-provenance
+    tool read to link a published image back to its source, so it earns its place —
+    but adding it made a third hand-written copy of a URL that already exists in
+    `battery_worth.REPO_URL` and `[project.urls]`, and a Dockerfile is not
+    importable any more than packaging metadata is. An unpinned copy is precisely
+    how the wrong account survived in one artifact while the others were corrected.
+
+    Parsed with a narrow reader rather than a Dockerfile library: this asserts one
+    label's value, and a dependency for that would be a strange thing to install
+    into a project whose analysis engine is deliberately dependency-light.
+    """
+    dockerfile = Path(__file__).resolve().parent.parent / "Dockerfile"
+    assert dockerfile.exists(), "the image is part of the shipped surface"
+
+    prefix = "LABEL org.opencontainers.image.source="
+    values = [
+        line.strip().removeprefix(prefix).strip().strip('"')
+        for line in dockerfile.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith(prefix)
+    ]
+
+    assert values == [REPO_URL], (
+        "the image's source label must name the repository exactly once, and "
+        "must be the same URL the card and the report print"
+    )
+
+
 # --- Portability -------------------------------------------------------------
 
 

@@ -1,0 +1,50 @@
+# What the build context is allowed to carry.
+#
+# Without this file the context is the whole working tree, and two things go
+# wrong. `.git` alone invalidates the build cache on every commit — the context
+# hash changes whenever HEAD moves, so a docs-only commit rebuilds the wheel.
+# And `scratchpad/cards/` ships sample PNGs into the build for no reason: they
+# are inspection artifacts, never inputs to it.
+#
+# Everything here is excluded from the context, not from the image: the wheel is
+# built from `src/`, `pyproject.toml` and `README.md`, and nothing below is one
+# of those.
+
+# Version control — the cache-invalidation problem above.
+.git
+.gitignore
+
+# Local environments and build output. A host `.venv` holds Linux-incompatible
+# or simply stale binaries and must never be confused with the image's /opt/venv.
+.venv
+dist/
+build/
+*.egg-info
+
+# Caches: large, machine-local, and meaningless inside the image.
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Rendered cards and reports for visual inspection, plus the default --output
+# directory. These are outputs of the tool, not inputs to its build.
+scratchpad/
+report/
+
+# Datasets. Never committed, but they live in the tree during a real run and are
+# the largest thing that could accidentally enter the context.
+*.csv
+_datasets/
+
+# Editor and OS noise.
+.vscode/
+.idea/
+.DS_Store
+
+# Docker's own files: changing the Dockerfile already busts the cache without
+# being part of the context it describes.
+Dockerfile
+.dockerignore
