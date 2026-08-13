@@ -15,6 +15,14 @@ import pandas as pd
 
 from battery_worth.models import ColumnMapping, IngestReport
 
+DEFAULT_TIMEZONE = "Europe/Rome"
+"""The analysis timezone assumed when the user declares none.
+
+Shared with the CLI so that "the default" is one value rather than two literals
+that can drift: the caveat naming the zone in effect has to name the same one the
+timestamps were actually localized with.
+"""
+
 _MIN_DAYS = 30
 _SEASONALITY_DAYS = 365
 _GAP_THRESHOLD_HOURS = 3.0
@@ -26,7 +34,7 @@ _MIN_POINTS_FOR_TREND = 2
 def load_energy_data(
     path: Path,
     mapping: ColumnMapping,
-    timezone: str = "Europe/Rome",
+    timezone: str = DEFAULT_TIMEZONE,
     cumulative: bool | None = None,
 ) -> tuple[pd.DataFrame, IngestReport]:
     """Load, validate and hourly-resample a user CSV of historical energy data.

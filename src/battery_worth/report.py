@@ -25,8 +25,10 @@ from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescap
 
 from battery_worth import PROJECT_NAME, REPO_URL
 from battery_worth.analysis import recommended_scenario
+from battery_worth.ingest import DEFAULT_TIMEZONE
 from battery_worth.models import (
     AnalysisResult,
+    AnalysisTimezone,
     ScenarioResult,
     Tariff,
     TariffKind,
@@ -53,6 +55,8 @@ def render_report(
     result: AnalysisResult,
     tariff: Tariff,
     warnings: list[str] | None = None,
+    *,
+    timezone: AnalysisTimezone | None = None,
 ) -> str:
     """Render the full four-section Markdown report.
 
@@ -60,7 +64,15 @@ def render_report(
     Seasonal analysis, Limits & assumptions. "Limits & assumptions" in particular
     is never conditional — a report that omits its own caveats when the numbers
     look good is exactly the failure mode this tool exists to avoid.
+
+    `timezone` carries both the zone in effect and whether the user declared it; when
+    omitted the report describes the default, which is what a caller who never asked
+    about timezones got. The reader needs the declared/assumed difference to know
+    whether the tool was told or guessed — it is not recoverable from the name alone.
     """
+    analysis_timezone = (
+        timezone if timezone is not None else AnalysisTimezone(name=DEFAULT_TIMEZONE)
+    )
     env = _build_environment()
     template = env.get_template(_TEMPLATE_NAME)
 
@@ -79,6 +91,8 @@ def render_report(
             seasonal_note=_seasonal_note(result),
             has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
             tariff_description=describe_tariff(tariff),
+            timezone=analysis_timezone.name,
+            timezone_declared=analysis_timezone.declared,
             warnings=warnings or [],
             project_name=PROJECT_NAME,
             repo_url=REPO_URL,
@@ -92,10 +106,12 @@ def write_report(
     result: AnalysisResult,
     tariff: Tariff,
     warnings: list[str] | None = None,
+    *,
+    timezone: AnalysisTimezone | None = None,
 ) -> None:
     """Render the report and write it to `path`, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report(result, tariff, warnings), encoding="utf-8")
+    path.write_text(render_report(result, tariff, warnings, timezone=timezone), encoding="utf-8")
 
 
 def _build_environment() -> Environment:

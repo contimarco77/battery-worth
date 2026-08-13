@@ -142,6 +142,12 @@ on the strength of the numbers above.
   simulated as zero consumption and zero production, not as an average of the hours
   around it. A gappy export therefore understates both what you used and what your roof
   made, and with it what a battery would have been worth.
+- **Timestamps are read in {{ timezone }}{% if not timezone_declared %}, the assumed default{% endif %}.** Every timestamp in your data is
+  interpreted as local time in that zone{% if not timezone_declared %} — no timezone was declared for this run, so
+  the default was used rather than anything detected from the file{% endif %}. The F1/F2/F3 time bands and the
+  ARERA holiday calendar are defined on *Italian* local time, so on data recorded
+  elsewhere those bands fall on the wrong hours and correspond to no real tariff,
+  whichever tariff this run was priced with.
 - **Battery specification is assumed, not measured.** Charge/discharge power limits,
   round-trip efficiency and minimum state of charge come from the values passed on the
   command line. A real installation's inverter limits and standby losses will differ.

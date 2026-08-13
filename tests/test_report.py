@@ -12,7 +12,13 @@ import pandas as pd
 import pytest
 
 from battery_worth.analysis import recommended_scenario, run_analysis
-from battery_worth.models import AnalysisResult, ScenarioResult, Tariff, TariffKind
+from battery_worth.models import (
+    AnalysisResult,
+    AnalysisTimezone,
+    ScenarioResult,
+    Tariff,
+    TariffKind,
+)
 from battery_worth.report import annualization_years, render_report, write_report
 from tests.test_analysis import FLAT_TARIFF, TEMPLATE, make_report, make_solar_days
 from tests.test_seasonal import make_year
@@ -198,6 +204,45 @@ def test_limits_states_the_zero_fill_rule_even_when_the_data_has_no_gaps() -> No
 
     assert "Warnings" not in markdown, "this fixture is continuous — no gap warning to lean on"
     assert "zero consumption and zero production" in limits
+
+
+def test_limits_names_the_analysis_timezone_and_flags_it_as_the_default() -> None:
+    """The timezone caveat is a modelling assumption, not an incident report.
+
+    `_warn_if_not_italian` inspects the index *after* ingest, and ingest localizes with
+    the default zone when none is declared — so on a default run the index is always
+    Europe/Rome and the conditional warning cannot fire, however foreign the data. The
+    reader who most needs telling is therefore the one the warning never reaches, which
+    is why the statement lives here, where it is unconditional. It must name the zone in
+    effect *and* say the tool assumed rather than detected it.
+    """
+    markdown = render_report(build_result(), FLAT_TARIFF)
+    limits = markdown.split("## Limits & assumptions")[1]
+
+    assert "Europe/Rome" in limits
+    assert "the assumed default" in limits
+    assert "no timezone was declared" in limits
+    # The Italian-bands consequence must hold for this run, which is priced flat.
+    assert "ARERA holiday calendar" in limits
+    assert "whichever tariff this run was priced with" in limits
+
+
+def test_limits_does_not_call_a_declared_timezone_an_assumption() -> None:
+    """Naming the zone is not enough: a reader comparing two runs has to be able to tell
+    whether the tool was told or guessed, and a declared zone must not be labelled
+    'default'. The band caveat stays either way — it describes the F1/F2/F3 scheme, not
+    a verdict on this run's data."""
+    markdown = render_report(
+        build_result(),
+        FLAT_TARIFF,
+        timezone=AnalysisTimezone(name="Australia/Sydney", declared=True),
+    )
+    limits = markdown.split("## Limits & assumptions")[1]
+
+    assert "Australia/Sydney" in limits
+    assert "the assumed default" not in limits
+    assert "no timezone was declared" not in limits
+    assert "whichever tariff this run was priced with" in limits
 
 
 def test_full_year_limits_says_seasonality_is_captured() -> None:

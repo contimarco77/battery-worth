@@ -27,9 +27,10 @@ import typer
 
 from battery_worth.analysis import recommended_scenario, run_analysis
 from battery_worth.card import render_summary_card
-from battery_worth.ingest import load_energy_data
+from battery_worth.ingest import DEFAULT_TIMEZONE, load_energy_data
 from battery_worth.models import (
     AnalysisResult,
+    AnalysisTimezone,
     BatterySpec,
     ColumnMapping,
     IngestReport,
@@ -112,7 +113,12 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     efficiency: Annotated[float, typer.Option(help="Round-trip efficiency, 0-1")] = 0.90,
     min_soc: Annotated[float, typer.Option(help="Minimum state of charge, fraction 0-1")] = 0.0,
     # --- data ---
-    timezone: Annotated[str, typer.Option(help="IANA timezone of the data")] = "Europe/Rome",
+    timezone: Annotated[
+        str | None,
+        typer.Option(
+            help=f"IANA timezone of the data (default: {DEFAULT_TIMEZONE})",
+        ),
+    ] = None,
     col_timestamp: Annotated[str, typer.Option(help="Timestamp column name")] = (
         DEFAULT_TIMESTAMP_COL
     ),
@@ -172,7 +178,14 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     except ValueError as exc:
         _fail(f"Invalid battery parameters: {exc}")
 
-    _check_timezone(timezone)
+    # `--timezone` defaults to None rather than to the zone itself so that a declared
+    # Europe/Rome stays distinguishable from an assumed one. Ingest localizes with the
+    # resolved value either way; only the caveat reads the difference.
+    analysis_timezone = AnalysisTimezone(
+        name=timezone if timezone is not None else DEFAULT_TIMEZONE,
+        declared=timezone is not None,
+    )
+    _check_timezone(analysis_timezone.name)
 
     header = _read_header(data)
     mapping = _resolve_mapping(
@@ -190,7 +203,9 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         try:
-            df, report = load_energy_data(data, mapping, timezone=timezone, cumulative=cumulative)
+            df, report = load_energy_data(
+                data, mapping, timezone=analysis_timezone.name, cumulative=cumulative
+            )
             result = run_analysis(
                 df,
                 report,
@@ -206,12 +221,24 @@ def analyze(  # noqa: PLR0913, PLR0917 - Typer derives the CLI surface from thes
             _fail(f"Could not read '{data}': {exc}")
     runtime_warnings = [str(w.message) for w in captured]
 
-    _print_report(result, report, tariff, runtime_warnings)
+    _print_report(
+        result,
+        report,
+        tariff,
+        runtime_warnings,
+        timezone=analysis_timezone,
+    )
 
     if output is not None:
         all_warnings = [*report.warnings, *runtime_warnings]
         try:
-            write_report(output, result, tariff, all_warnings)
+            write_report(
+                output,
+                result,
+                tariff,
+                all_warnings,
+                timezone=analysis_timezone,
+            )
         except OSError as exc:
             _fail(f"Could not write the report to '{output}': {exc}")
         typer.echo(f"Report written to {output}")
@@ -501,6 +528,8 @@ def _print_report(
     report: IngestReport,
     tariff: Tariff,
     runtime_warnings: list[str],
+    *,
+    timezone: AnalysisTimezone,
 ) -> None:
     """Print the whole plain-text result: data summary, warnings, table, caveats."""
     echo = typer.echo
@@ -526,7 +555,7 @@ def _print_report(
     _print_warnings(report.warnings, runtime_warnings)
     _print_scenarios(result)
     _print_seasonality(result)
-    _print_limits()
+    _print_limits(timezone)
 
 
 def _print_warnings(ingest_warnings: list[str], runtime_warnings: list[str]) -> None:
@@ -621,8 +650,15 @@ def _print_seasonality(result: AnalysisResult) -> None:
     echo("!" * 78)
 
 
-def _print_limits() -> None:
+def _print_limits(timezone: AnalysisTimezone) -> None:
+    """The terminal caveats, mirroring the report's "Limits & assumptions".
+
+    The two lists say the same things in the same order on purpose: a reader who
+    never passes --output sees only this one, and a caveat added to just one side
+    ends up documented in the artifact nobody generated.
+    """
     echo = typer.echo
+    source = "as declared" if timezone.declared else "the assumed default, not detected"
     echo("")
     echo("LIMITS & ASSUMPTIONS")
     for line in (
@@ -641,6 +677,11 @@ def _print_limits() -> None:
         "Missing periods count as zero energy: any interval the data does not cover "
         "is simulated as zero consumption and zero production, not as an average of "
         "the hours around it. A gappy export understates both.",
+        f"Timestamps are read in {timezone.name} ({source}): every timestamp is "
+        "interpreted as local time in that zone. The F1/F2/F3 bands and the ARERA "
+        "holiday calendar are defined on Italian local time, so on data recorded "
+        "elsewhere those bands fall on the wrong hours and correspond to no real "
+        "tariff, whichever tariff this run was priced with.",
     ):
         echo(_wrap(f"  - {line}", width=76, indent="    "))
     echo("")

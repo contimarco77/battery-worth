@@ -768,6 +768,37 @@ def test_terminal_limits_states_the_zero_fill_rule(meter_csv: Path) -> None:
     assert "zero consumption and zero production" in limits
 
 
+def test_terminal_limits_names_the_analysis_timezone(meter_csv: Path) -> None:
+    """The terminal caveats mirror the report's, so the timezone statement lands in both.
+
+    On a default run the conditional F1/F2/F3 warning cannot fire — ingest localizes with
+    the default zone, so the index is Europe/Rome whatever the data was. This unconditional
+    line is what a reader without --output has instead, and it must say the zone was
+    assumed rather than detected.
+    """
+    result = runner.invoke(app, ["analyze", str(meter_csv), "--flat-price", "0.25"])
+
+    assert result.exit_code == 0, result.output
+    limits = result.output.split("LIMITS & ASSUMPTIONS")[1]
+    assert "Europe/Rome" in limits
+    assert "the assumed default, not detected" in limits
+    assert "whichever tariff this run was priced with" in limits
+
+
+def test_terminal_limits_marks_a_declared_timezone_as_declared(meter_csv: Path) -> None:
+    """A declared zone must not be reported as an assumption — that is the whole
+    distinction the caveat exists to draw."""
+    result = runner.invoke(
+        app,
+        ["analyze", str(meter_csv), "--flat-price", "0.25", "--timezone", "Australia/Sydney"],
+    )
+
+    assert result.exit_code == 0, result.output
+    limits = result.output.split("LIMITS & ASSUMPTIONS")[1]
+    assert "Australia/Sydney (as declared)" in limits
+    assert "the assumed default" not in limits
+
+
 def _self_consumption_after(output: str, label: str) -> float:
     """The 'X% -> Y%' self-consumption column of one scenario row, as a fraction."""
     row = next(line for line in output.splitlines() if line.strip().startswith(label))

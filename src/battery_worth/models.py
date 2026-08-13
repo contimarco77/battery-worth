@@ -100,6 +100,20 @@ class IngestReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class AnalysisTimezone(BaseModel):
+    """The timezone the analysis timestamps were localized in, and whether the user
+    said so or the default was assumed.
+
+    The two travel together because neither is usable alone: the name without
+    `declared` cannot distinguish a run that was told 'Europe/Rome' from one that
+    merely defaulted to it, and that distinction is the whole point of reporting it.
+    Ingest localizes with `name` either way — nothing here changes a number.
+    """
+
+    name: str
+    declared: bool = False
+
+
 class BatterySpec(BaseModel):
     """Physical parameters of a simulated battery."""
 
