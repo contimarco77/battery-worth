@@ -1021,3 +1021,99 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   and the "Why not battery_sim?" section, then launch posts. The optional LLM layer
   is deferred to v0.2 — decision and rationale in "Locked decisions". Per the
   standing note from 2026-08-11 (3), the launch posts depend on the README.
+- **2026-08-13** — **Docker image, and a timezone default that hid a total platform
+  failure.** Four commits: `dbd405e` (session cross-references), `18a430e` (`tzdata`
+  declared), `bfb5197` (the image), `2d8fba3` (the analysis timezone stated as a
+  caveat). Suite 328 → 334, all four gates clean.
+
+  *The brief's premise about slim images was false, and measurement caught it.* The
+  Docker task asserted that Debian slim images ship no tz database, and gave that as
+  the reason to declare `tzdata`. `python:3.11-slim-bookworm` ships one — the path is
+  present, `dpkg -l` lists the package, and an image built without the PyPI wheel
+  resolved Europe/Rome anyway. The dependency was kept because it is right, and its
+  stated justification in `pyproject.toml` was rewritten to what actually holds: belt
+  and braces in the image, load-bearing off it. The durable point is the alternative.
+  Had the premise gone unchecked, the repository would carry a comment asserting
+  something the project's own image contradicts, and **no test could have noticed,
+  because it is a claim about an environment rather than about a value.**
+
+  *The first counterfactual measured the opposite of what it was cited for.* The
+  initial check deleted the Debian `tzdata` package while the PyPI one was still in
+  the venv, so `zoneinfo` used the fallback. That run was reported as a third proof
+  that the base image carries a tz database; it is in fact a proof that the newly
+  added dependency works. Two variables moved and only one was named. Same shape as
+  2026-08-11 (11), but from the writing side rather than the reading side: there, a
+  plausible mechanism in a bug report was mistaken for a finding; here, a plausible
+  mechanism was written up as a measurement. **A counterfactual that leaves a second
+  path to the same result measures nothing.**
+
+  *`tzdata` was never about the Italian bands.* The brief scoped it to F1/F2/F3
+  because the bands are defined in Europe/Rome. But `ingest` localizes with the
+  default timezone on *every* run, so `ZoneInfo("Europe/Rome")` is called whatever
+  tariff is chosen: on Windows every invocation raised, flat tariffs included, and
+  the CLI reported it as an unknown `--timezone` for a flag the user never passed. A
+  total platform failure was scoped as a degraded regional feature. The evidence was
+  in this session's own output — `index tz after ingest: Europe/Rome` on a run with
+  no flag and no bands — and was read past twice. **The same shape as 2026-08-11 (10):
+  the signal was visible and had been read as noise.**
+
+  *A guard that could not fire on the path that needed it.* `_warn_if_not_italian`
+  inspects `index.tz` after ingest, but a defaulted run has already localized to
+  Europe/Rome, so the check sees an Italian zone whatever the data is. It caught
+  users who correctly declared a foreign timezone — the ones who already knew — and
+  was silent for everyone who declared nothing. Confirmed: Australian fixture, flat
+  tariff, no flag, zero warnings. **The default overwrote the fact the check
+  inspected.** Fifth instance of a check reporting success because it had stopped
+  looking, after 2026-08-11 (10)'s `py.typed`, the `ruff format` gate, and
+  `bars_of()` matching nothing.
+
+  The fix's shape is the part worth carrying. Making the warning fire on an
+  undeclared timezone would have fired on the happy path, and a warning that lights
+  up on the normal path stops being read. So the conditional warning is untouched and
+  a permanent statement went into "Limits & assumptions" instead, following the
+  gaps-as-zero precedent from 2026-08-12 (3). Expressing "assumed" required moving
+  the `--timezone` default off parse time, so that "the user chose Europe/Rome" and
+  "nobody said" stay distinguishable. That refactor is in the same commit as the
+  caveat deliberately, rather than split into two: it has no justification
+  independent of it.
+
+  *Container verification, in order of how much it carries.* The container-rendered
+  card is byte-identical to the host's, 1200x1200, DejaVu Sans — worth stating
+  because 2026-08-11 (6) found a font that resolved correctly only on this machine,
+  and this is the first evidence from a different one. `MPLCONFIGDIR` is
+  load-bearing, confirmed by counterfactual: without it matplotlib warns on stderr
+  outside the CLI's `warnings.catch_warnings` block, bypassing the report's WARNINGS
+  section. `PYTHONUNBUFFERED=1` turned out **not** to be load-bearing — ordering
+  holds without it because `_fail` already flushes — and was kept as defence rather
+  than reported as the thing holding the order. Recording the negative matters: the
+  2026-08-12 entry documents that ordering bug, and a future reader must not conclude
+  the env var fixed it.
+
+  Multi-stage saves 0.3 MB, not megabytes: 419.09 runtime against 419.39 builder,
+  because the scientific wheels are 289 MB of the total. The win is no pip and no
+  compiler in the runtime — the README will repeat it in those terms. The OCI source
+  label would have been a third hand-written copy of the repo URL; it was added with
+  the existing URL test extended to pin it, per 2026-08-11 (7). `ha_export.py` ships
+  in the image as `ha-export` via `--entrypoint`, without moving into the package or
+  into `[project.scripts]`.
+
+  *Two constraints for the README, recorded as constraints rather than as tasks.*
+  Terminal output prints **container** paths: `--output /out/report.md` reports
+  `/out/report.md`, which lands wherever `-v` mapped it, so the README must state the
+  mapping and must show `--user $(id -u):$(id -g)`, without which the user gets
+  root-owned files. And **the card screenshot must use a flat tariff, not the
+  bands**: the footer names the band scheme but never the timezone, so on the
+  Australian fixture "Italian bands" actively suggests a frame a defaulted run may
+  not have had — a correct number rendered into a misleading claim, the failure mode
+  of 2026-08-11 (8) and (9). The footer is deliberately minimal and is not being
+  changed; the screenshot avoids the ambiguous case instead. Revisit when the Italian
+  PVGIS fixture lands.
+
+  *The F1/F2/F3 figures produced during Docker verification (269/11.2 · 423/14.2 ·
+  503/17.9 · 524/22.9) are Australian data priced on Italian bands with timestamps
+  relabelled as Rome.* They are valid as a portability check and as nothing else.
+  They must not be quoted anywhere as results.
+
+  **Next: the README** — real card screenshot (flat tariff), the "Why not
+  battery_sim?" section, the Docker path mapping and `--user` line. Then launch
+  posts, which depend on it. The optional LLM layer remains deferred to v0.2.
