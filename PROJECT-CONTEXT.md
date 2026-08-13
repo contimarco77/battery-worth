@@ -568,6 +568,10 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
 
 ## Session log
 
+> Entries are chronological. The first session of a day is unnumbered;
+> later sessions the same day are (2), (3), ... References below name the
+> date when the number alone is ambiguous.
+
 - **2026-08-11** — Field-tested `ingest.py` against the real Ausgrid fixture (first
   contact with data it wasn't written against): all report fields correct, energy
   conserved exactly, both DST branches fired and read clearly. Ran the 10 kWh
@@ -874,6 +878,45 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   the sixth differs only in three docstrings where the formatter inserted a space after
   the opening `"""` on strings whose text begins with a quote character (`""""Pays` →
   `""" "Pays`), a required disambiguation that touches no assertion.
+- **2026-08-12** — **Home Assistant export, as a standalone script rather than an
+  integration.** `scripts/ha_export.py` + 76 tests. Suite 242 → 318, all four gates
+  clean, and `mypy --strict` clean on the script and its tests as well as on `src/`.
+  The decision and its rationale are in the new "Home Assistant export" section; the
+  short version is that the offline claim stays unqualified and `ingest.py` gains no
+  network or auth surface.
+
+  *No new dependency, not even an optional extra.* The WebSocket client is ~120 lines
+  of stdlib RFC 6455. That is the part of this change most likely to be wrong, so the
+  framing is kept pure (`encode_frame` / `decode_frame` over bytes, no socket) and
+  tested directly — including the 7/16/64-bit length boundaries, partial buffers, and
+  the unmasked server-to-client direction. Nothing in the suite mocks a socket, per
+  the brief: every test drives a pure function with a recorded-shape payload.
+
+  *The format assumptions are the tests worth having.* Epoch **milliseconds** (read as
+  seconds, 2024-01-01 becomes the year 55943), interval-**starting** timestamps that
+  must not be shifted, and `change` rather than `sum` — with one payload carrying both
+  fields to pin that no cumulative diffing creeps back in. Each of these fails
+  silently rather than loudly, which is the argument for asserting them at all.
+
+  *Verified end to end without an instance*, by generating a synthetic year in HA's
+  exact wire shape and pushing it through the real parsing and CSV writer: 12 monthly
+  chunks → 8784 rows (2024 is a leap year), every consecutive pair exactly 3600 s
+  apart, no gaps and no duplicated boundary hour. The resulting CSV feeds
+  `battery-worth analyze` with no intermediate step — schema auto-detected as
+  `grid_centric`, 366 days, native resolution read as 60 min. That round trip is what
+  the whole design rests on, so it was worth running rather than assuming.
+
+  *Two defects came from running the script, not from the suite.* Multi-line errors
+  were prefixed `error:` on every line, so a single failure read as five separate
+  ones; and progress output landed *after* the error that stopped it, because stdout
+  is block-buffered when piped while stderr is not. Both are in what the user reads
+  rather than in what the code computes — the same blind spot sessions (6) and (9)
+  documented for the card, now confirmed to apply to terminal output too. **A test
+  that inspects an exception object cannot see how the message is printed.**
+
+  **Next: the rest of Milestone 3** — optional LLM layer, README card screenshot,
+  Dockerfile, launch posts. Per session (3)'s standing note, the launch posts depend
+  on the README, which now has the HA section but still not the screenshot.
 - **2026-08-12 (2)** — **Pre-launch audit.** Suite 318 → 321, all four gates clean.
   Two fixes, both cheap; everything else reported rather than changed.
 
@@ -944,7 +987,7 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   data shape most files do not have, where the seasonality warning it would sit beside
   is drawn only when it actually applies. A permanent line about a hypothetical gap
   would cost the same room for less. The card's period line already states the days
-  analysed, which — since session (12)'s fix — counts *covered* days, so a gappy export
+  analysed, which — since the 2026-08-12 (2) fix — counts *covered* days, so a gappy export
   shows a smaller number there rather than silently spanning the hole.
 
   *One gate finding worth keeping:* `ruff` flagged `load_energy_data` at 13 branches
@@ -957,42 +1000,3 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   fixture (audit section 2 — the honest fix for the transcribed-anchor problem noted in
   session (2) above), the duplicate "days" definition shared by simulator and ingest,
   and the `OSError` handler in `ha_export`.
-- **2026-08-12** — **Home Assistant export, as a standalone script rather than an
-  integration.** `scripts/ha_export.py` + 76 tests. Suite 242 → 318, all four gates
-  clean, and `mypy --strict` clean on the script and its tests as well as on `src/`.
-  The decision and its rationale are in the new "Home Assistant export" section; the
-  short version is that the offline claim stays unqualified and `ingest.py` gains no
-  network or auth surface.
-
-  *No new dependency, not even an optional extra.* The WebSocket client is ~120 lines
-  of stdlib RFC 6455. That is the part of this change most likely to be wrong, so the
-  framing is kept pure (`encode_frame` / `decode_frame` over bytes, no socket) and
-  tested directly — including the 7/16/64-bit length boundaries, partial buffers, and
-  the unmasked server-to-client direction. Nothing in the suite mocks a socket, per
-  the brief: every test drives a pure function with a recorded-shape payload.
-
-  *The format assumptions are the tests worth having.* Epoch **milliseconds** (read as
-  seconds, 2024-01-01 becomes the year 55943), interval-**starting** timestamps that
-  must not be shifted, and `change` rather than `sum` — with one payload carrying both
-  fields to pin that no cumulative diffing creeps back in. Each of these fails
-  silently rather than loudly, which is the argument for asserting them at all.
-
-  *Verified end to end without an instance*, by generating a synthetic year in HA's
-  exact wire shape and pushing it through the real parsing and CSV writer: 12 monthly
-  chunks → 8784 rows (2024 is a leap year), every consecutive pair exactly 3600 s
-  apart, no gaps and no duplicated boundary hour. The resulting CSV feeds
-  `battery-worth analyze` with no intermediate step — schema auto-detected as
-  `grid_centric`, 366 days, native resolution read as 60 min. That round trip is what
-  the whole design rests on, so it was worth running rather than assuming.
-
-  *Two defects came from running the script, not from the suite.* Multi-line errors
-  were prefixed `error:` on every line, so a single failure read as five separate
-  ones; and progress output landed *after* the error that stopped it, because stdout
-  is block-buffered when piped while stderr is not. Both are in what the user reads
-  rather than in what the code computes — the same blind spot sessions (6) and (9)
-  documented for the card, now confirmed to apply to terminal output too. **A test
-  that inspects an exception object cannot see how the message is printed.**
-
-  **Next: the rest of Milestone 3** — optional LLM layer, README card screenshot,
-  Dockerfile, launch posts. Per session (3)'s standing note, the launch posts depend
-  on the README, which now has the HA section but still not the screenshot.
