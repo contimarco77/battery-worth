@@ -22,7 +22,18 @@ exercise. Each one takes a branch that does not exist for the happy path:
 - `60_days`               partial year: the seasonality band, and clipped paybacks
 - `no_positive_savings`   an export price above import: every capacity loses money
 - `beyond_lifetime`       savings positive, every payback past the battery's life
+- `beyond_lifetime_thin_spread`  the same, on a house that is *not* saturated
 - `baseline_only`         a sweep with no battery in it at all
+
+**Rendering the case is half the job; looking at it is the other half.** Four
+defects shipped on cards this script had already written — a headline clipped at
+the card's edge, an axis whose labels named values its gridlines were not at, a
+verdict about batteries on a run that analysed none, and a headline repeating the
+stat beneath it. The script did its job in every case: the picture existed. Nobody
+opened it. `tests/test_card.py` now asserts the two properties that are visible
+only in the render — headline extent against the drawable width, and every tick
+label against its own location — across this same case list, so the ones that can
+be checked mechanically no longer depend on somebody remembering to look.
 
 **The list is maintained against the branches, not against past bugs.** It was
 built the other way round — one case per defect already seen — and the hole that

@@ -58,6 +58,14 @@ dev = [
     "mypy>=1.11",
     "pandas-stubs",
     "types-python-dateutil",
+    # Already a hard dependency of matplotlib, so this installs nothing new;
+    # declared explicitly for the same reason python-dateutil is above, because
+    # test_card.py imports PIL directly. The card's layout defects are only
+    # visible in the written PNG — a test asserting on matplotlib's own layout
+    # objects cannot see a geometry that is computed right and drawn wrong — so
+    # the suite reads pixels back out of the file, and that needs an image reader
+    # it actually declares rather than one it inherits.
+    "pillow>=10.0",
 ]
 
 [project.scripts]

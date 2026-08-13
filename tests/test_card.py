@@ -22,6 +22,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import numpy as np
 import pytest
 from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -30,9 +31,19 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 from matplotlib.transforms import Bbox
+from PIL import Image
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL, REPO_URL
 from battery_worth.analysis import run_analysis
+from battery_worth.card import (
+    _MARGIN as CARD_MARGIN,
+)
+
+# `_MARGIN` is the card's own text margin, imported rather than copied: it is the
+# edge the headline must stay inside, and a second copy of the number here would let
+# the two drift apart silently — leaving the test measuring against a boundary the
+# card no longer uses. Private because nothing outside the renderer sets layout; the
+# test asserts on the renderer's own contract, which is the one case for reaching in.
 from battery_worth.card import (
     CARD_PX,
     build_summary_card,
@@ -61,6 +72,13 @@ LOSING_TARIFF = Tariff(kind=TariffKind.FLAT, flat_price_eur_kwh=0.05, export_pri
 # synthetic day is small, and the point is to land the *payback* in a realistic
 # band, not the price. Tests about long paybacks raise it explicitly.
 DEFAULT_COST_PER_KWH = 150.0
+
+# Figure fraction one wrapped headline line costs everything below it. The card is
+# 1200px and headlines wrap at up to 54pt, so a second line pushes the bands under it
+# down by roughly this much. Stated as an absolute fraction rather than derived from
+# the renderer's sizes for the same reason the layout bounds are: a yardstick computed
+# from the thing under test moves with it, and stops being able to see the defect.
+_HEADLINE_LINE = 0.07
 
 
 def build(
@@ -695,6 +713,186 @@ def axis_overruns(figure: Figure) -> list[str]:
     return faults
 
 
+# A spread narrow enough that the battery saves money every year but so little of it
+# that nothing recovers its cost — the `beyond_lifetime_thin_spread` sample case, and
+# the one whose savings land in single-digit EUR where the axis locator misbehaved.
+THIN_SPREAD_TARIFF = Tariff(
+    kind=TariffKind.FLAT, flat_price_eur_kwh=0.25, export_price_eur_kwh=0.22
+)
+
+
+def sample_cards() -> dict[str, Figure]:
+    """One built figure per case in `scripts/render_sample_cards.py`, by name.
+
+    The sample script exists because the card's defects are invisible to assertions
+    about *content* — a clipped headline and a mislabelled axis are both perfectly
+    correct strings drawn in the wrong place. The script renders every branch so a
+    human can look; this mirrors its case list so the properties a human would have
+    to notice by eye are checked on every one of them automatically.
+
+    Kept as a parallel list rather than importing the script, which needs the Ausgrid
+    fixture the suite deliberately does not depend on. The shapes are what matter and
+    they are reproduced from the synthetic fixture: what must not drift is the set of
+    *branches* covered, which is what both lists are maintained against.
+    """
+    return {
+        "ausgrid": build_summary_card(build(), tariff=FLAT_TARIFF),
+        "no_cost": build_summary_card(build(cost_per_kwh=None), tariff=FLAT_TARIFF),
+        "no_cost_no_knee": build_summary_card(
+            build(capacities=[0, 20], cost_per_kwh=None), tariff=FLAT_TARIFF
+        ),
+        "single_capacity": build_summary_card(build(capacities=[10]), tariff=FLAT_TARIFF),
+        "60_days": build_summary_card(build(days=60), tariff=FLAT_TARIFF),
+        "no_positive_savings": build_summary_card(
+            build(tariff=LOSING_TARIFF), tariff=LOSING_TARIFF
+        ),
+        # The two no-payback shapes: a saturated roof, and a thin spread.
+        "beyond_lifetime": build_summary_card(beyond_lifetime(pv_peak=1.2), tariff=FLAT_TARIFF),
+        "beyond_lifetime_thin_spread": build_summary_card(
+            build(tariff=THIN_SPREAD_TARIFF, cost_per_kwh=600.0), tariff=THIN_SPREAD_TARIFF
+        ),
+        "baseline_only": build_summary_card(build(capacities=[0]), tariff=FLAT_TARIFF),
+    }
+
+
+def pinned_savings(result: AnalysisResult, targets: dict[float, float]) -> AnalysisResult:
+    """`result` with the named capacities' annual savings driven to exact figures.
+
+    Lets a test state the geometry it is about — "a bar at 202 against a 200 tick",
+    "savings in single digits" — instead of hunting for a fixture that happens to
+    produce it, which is how a case quietly stops being tested when a number moves.
+
+    The card plots *annual* savings, so the targets are scaled back through the same
+    `annualization_years` the renderer divides by; setting `simulated_cost_eur`
+    naively would land them wrong by that factor.
+    """
+    years = annualization_years(result.days_analyzed)
+    scenarios = [
+        s.model_copy(
+            update={"simulated_cost_eur": s.baseline_cost_eur - targets[s.capacity_kwh] * years}
+        )
+        if s.capacity_kwh in targets
+        else s
+        for s in result.scenarios
+    ]
+    return result.model_copy(update={"scenarios": scenarios})
+
+
+def headline_of(figure: Figure) -> Text:
+    """The headline artist: the topmost bold text the card draws.
+
+    Identified by *position* rather than by matching its string, because the string
+    is what varies per case and the whole point is to check every case's headline.
+
+    Emphatically not "the largest bold text", which is what this helper tried first
+    and which quietly broke the test that uses it. The headline shrinks to fit, so on
+    the one case that shrinks furthest it can end up *smaller* than the 32pt stat
+    values below it — and a size-based lookup then measures a stat instead, reports it
+    as comfortably inside the margin, and passes while the real headline runs off the
+    card. That is precisely the defect under test, hidden by the helper meant to
+    expose it. The headline's position is invariant; its size is the variable.
+    """
+    candidates = [t for t in figure.texts if t.get_fontweight() == "bold"]
+    assert candidates, "the card always draws a bold headline"
+    return max(candidates, key=lambda t: t.get_position()[1])
+
+
+def test_no_text_is_drawn_wider_than_the_card() -> None:
+    """No figure-level text may extend past the drawable width, on any sample case.
+
+    **The defect this exists to catch shipped.** `beyond_lifetime_thin_spread` drew
+    "No size pays back before the battery wears out" to x=1199 on a 1200px card — the
+    headline ran to the last pixel column and was cut. The renderer's shrink-to-fit
+    loop stepped down to its minimum size and then returned that minimum
+    unconditionally, so a string still too wide at the floor was reported as fitting.
+    A fit loop whose last step gives up silently is not a fit.
+
+    It survived because the suite could only see the *string*, which was correct, and
+    the sample-card script that renders the picture had nobody assert on its output.
+    So the property is measured here in the terms the defect lives in: the rendered
+    extent of the drawn text against the card's own margins.
+
+    **Every text artist, not only the headline.** Scoped to the headline first, this
+    test went green while the fix for it pushed the *subtitle* off the same edge:
+    `baseline_only`'s replacement sentence was rewritten longer, and unlike the
+    headline it is drawn at a fixed size with no fitting at all, so its length was
+    the only thing holding it on the card. Checking one artist licenses the identical
+    defect in every other — so the invariant is stated over all of them.
+    """
+    limit = (1.0 - 2 * CARD_MARGIN) * CARD_PX
+    faults: list[str] = []
+    for name, figure in sample_cards().items():
+        figure.canvas.draw()
+        canvas = figure.canvas
+        assert isinstance(canvas, FigureCanvasAgg)
+        renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+        for text in figure.texts:
+            if not text.get_text():
+                continue
+            extent = text.get_window_extent(renderer=renderer)
+            # Right-aligned text (the footer's repo URL) is anchored at the right
+            # margin, so both edges are checked rather than the width alone.
+            if (
+                extent.x0 < CARD_MARGIN * CARD_PX - 1
+                or extent.x1 > CARD_PX - (CARD_MARGIN * CARD_PX) + 1
+            ):
+                faults.append(
+                    f"{name}: {text.get_text()[:50]!r} spans "
+                    f"x={extent.x0:.1f}..{extent.x1:.1f} outside the "
+                    f"{limit:.1f}px drawable width"
+                )
+    assert faults == []
+
+
+def test_every_savings_tick_label_names_the_value_it_sits_at() -> None:
+    """A gridline labelled "2" must be at 2, not at 2.5.
+
+    **The defect this exists to catch shipped.** On `beyond_lifetime_thin_spread`,
+    whose savings are 8/15/18 EUR, the locator chose a step of 2.5 and the formatter
+    printed integers: the axis read 0, 2, 5, 8, 10, 12, 15, 18, 20 for gridlines
+    actually at 0, 2.5, 5, 7.5, 10 ... Every reader checking a bar against a gridline
+    got a wrong number off an axis that was misstating itself.
+
+    It had never been seen because every earlier card had savings in the hundreds,
+    where the chosen step happens to be integral — so this is checked across the whole
+    sample set rather than on the one case that broke, since the next range to pick a
+    fractional step is the one nobody has looked at yet.
+
+    **The test compares a label against a position**, which is the shape of the
+    defect: a formatter-was-called assertion would have passed throughout, because the
+    formatter was called and did exactly what it said. Only reading the tick's own
+    location back out of the axis can see the disagreement.
+
+    The single-digit case is pinned explicitly rather than left to the sample set.
+    None of the synthetic fixtures happens to land on a fractional step — they all
+    produce integral ticks with or without the fix — so a sweep of them alone asserts
+    a property that is true for the wrong reason and cannot fail. The 8/15/18 EUR
+    shape that actually shipped the defect is built here so the test can see it.
+    """
+    cases = sample_cards()
+    cases["single digit savings"] = build_summary_card(
+        pinned_savings(build(), {5.0: 8.0, 10.0: 15.0, 15.0: 18.0}), tariff=FLAT_TARIFF
+    )
+
+    faults: list[str] = []
+    for name, figure in cases.items():
+        for axes in figure.axes:
+            if axes.get_ylabel() != "EUR / year":
+                continue
+            figure.canvas.draw()
+            low, high = axes.get_ylim()
+            for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True):
+                text = label.get_text()
+                # Only the ticks actually inside the panel are drawn, and only those
+                # are what the reader can misread.
+                if not text or not low <= location <= high:
+                    continue
+                named = float(text.replace(",", "").replace("−", "-"))
+                if named != pytest.approx(location):
+                    faults.append(f"{name}: gridline at {location} is labelled {text!r}")
+    assert faults == []
+
+
 @pytest.mark.parametrize(
     ("capacities", "cost", "days", "tariff"),
     [
@@ -726,14 +924,14 @@ def test_no_bar_or_label_is_drawn_outside_its_panel(
 
 
 def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
-    """303 against a 300 gridline — the geometry that actually broke the card.
+    """A bar just above a gridline — the geometry that actually broke the card.
 
-    The 60-day card's savings axis ran to a 300 tick while its tallest bar was 303,
-    and the "303 EUR" label was drawn past the top of the panel. It is the worst
-    case for the padding because the bar sits as close to the top gridline as it can
-    without passing it, leaving the label the least room, and it is exactly the
-    arrangement a fractional allowance is most likely to get wrong. Pinned with the
-    savings driven to that value rather than left to whichever fixture happens to
+    The 60-day card's savings axis ran to a round tick while its tallest bar sat
+    barely above it, and that bar's label was drawn past the top of the panel. It is
+    the worst case for the padding because the bar sits as close to the gridline as
+    it can without passing it, leaving the label the least room, and it is exactly
+    the arrangement a fractional allowance is most likely to get wrong. Pinned with
+    the savings driven to that value rather than left to whichever fixture happens to
     produce it, so the case cannot quietly stop being tested when a number moves.
 
     **Both halves of the geometry are needed.** The awkward value alone does not
@@ -741,31 +939,27 @@ def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
     produces, the old fractional padding covered the label with a few pixels to
     spare. The seasonality band on a partial-year card takes a slice of the chart
     height, and it is the shorter panel that turns those few pixels negative — so
-    this fixture carries the 60-day period as well as the 303.
+    this fixture carries the 60-day period as well as the awkward maximum.
     """
-    result = build(days=60)
-    # The card plots *annual* savings, so the raw period savings are scaled back
-    # through the same `annualization_years` the renderer divides by — setting
-    # `simulated_cost_eur` naively would land these targets 6x too high.
-    years = annualization_years(result.days_analyzed)
-    targets = {5.0: 199.0, 10.0: 288.0, 15.0: 303.0}
-    pinned = [
-        s.model_copy(
-            update={"simulated_cost_eur": s.baseline_cost_eur - targets[s.capacity_kwh] * years}
-        )
-        if s.capacity_kwh in targets
-        else s
-        for s in result.scenarios
-    ]
-    result = result.model_copy(update={"scenarios": pinned})
+    # The values are chosen so the tallest bar lands just *above* a gridline the
+    # locator actually places — 202 against a 200 tick. The original pinning was
+    # 303 against 300, which stopped being the awkward case when the savings axis
+    # moved to an integer locator: that locator steps this range by 40, so 303 sat
+    # a comfortable 23 EUR above its 280 tick and the geometry under test was gone.
+    # The assertions below re-derive the tick from the axis rather than trusting
+    # either number, so the fixture cannot silently stop reproducing the case again.
+    result = pinned_savings(build(days=60), {5.0: 132.0, 10.0: 191.0, 15.0: 202.0})
 
     figure = build_summary_card(result, tariff=FLAT_TARIFF)
     savings_axes = figure.axes[0]
 
     # The fixture has to actually be the awkward case, or the test is vacuous.
-    assert max(bar.get_height() for bar in bars_of(savings_axes)) == pytest.approx(303.0)
-    ticks = [t for t in savings_axes.get_yticks() if t <= 303.0]
-    assert max(ticks) == pytest.approx(300.0), "the bar must sit just above a tick"
+    tallest = max(bar.get_height() for bar in bars_of(savings_axes))
+    assert tallest == pytest.approx(202.0)
+    ticks = [t for t in savings_axes.get_yticks() if t <= tallest]
+    # Just above, and only just: the bar must clear its gridline by a small
+    # fraction of the span, which is what leaves the label the least room.
+    assert tallest - max(ticks) < 0.05 * tallest, "the bar must sit just above a tick"
 
     assert axis_overruns(figure) == []
 
@@ -1085,6 +1279,70 @@ def test_baseline_row_is_never_drawn_as_a_bar() -> None:
     assert len(figure.axes[0].patches) == 2
 
 
+def test_a_sweep_with_no_battery_states_that_nothing_was_analysed() -> None:
+    """A run that analysed no capacity must not report a verdict about capacities.
+
+    **The defect this exists to catch shipped.** `baseline_only` — a sweep containing
+    only capacity 0 — rendered the headline "No battery was worth it here" over the
+    subtitle "No capacity in this sweep saved money against the current tariff". Both
+    are claims about batteries, on a run that simulated none. The subtitle was
+    byte-identical to the `no_positive_savings` card's, which is the mechanism: with
+    no capacities there are no *positive* savings either, so the baseline-only sweep
+    fell through into the no-positive-savings branch and inherited its finding.
+
+    This is the same trap as a superlative over a single data point, which this card
+    already guards: an absence of evidence printed as evidence of absence, in the
+    largest text on the artifact that travels furthest. The card is allowed to be
+    nearly empty here — that is the honest rendering of a degenerate input — but not
+    to answer a question it never asked.
+    """
+    result = build(capacities=[0])
+    assert not [s for s in result.scenarios if s.capacity_kwh > 0], (
+        "the fixture must contain no battery, or this tests the wrong shape"
+    )
+
+    headline = headline_for(result.scenarios)
+    text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+
+    # It must say that nothing was analysed, rather than that nothing was worth it.
+    assert "analysed" in headline
+    assert "worth it" not in headline
+    assert "paid off" not in headline
+
+    # And the sentence under it must not be the no-positive-savings finding, which
+    # is the specific false claim that shipped.
+    assert "No capacity in this sweep saved money" not in text
+    for verdict in ("saved money against", "was worth it", "paid off here"):
+        assert verdict not in text, f"a baseline-only sweep must not claim {verdict!r}"
+
+
+def test_the_no_knee_headline_does_not_repeat_the_stat_below_it() -> None:
+    """With a cost absent and no knee, the headline must not restate the savings.
+
+    **The defect this exists to catch shipped.** `no_cost_no_knee` drew "Up to 462
+    EUR/year in savings" directly above a stat row reading "462 EUR / saved per year
+    at 20 kWh" — the same figure twice, two centimetres apart. Headline space is the
+    scarcest thing on the card, and spending it on a number the element below already
+    carries is the no-repeat rule this card enforces everywhere else; it is the rule
+    the single-capacity headline was written to obey, so breaking it here would
+    undercut that decision.
+
+    "Up to" was independently wrong: it promises a range, and this card draws one bar.
+    """
+    result = build(capacities=[0, 20], cost_per_kwh=None)
+    headline = headline_for(result.scenarios)
+    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+
+    savings = max(s.annual_savings_eur for s in result.scenarios if s.capacity_kwh > 0)
+    assert savings > 0, "the fixture must have savings to repeat, or this is vacuous"
+
+    # The figure appears exactly where it belongs — the stat row — and not above it.
+    assert f"{savings:,.0f}" in card_text(figure)
+    assert f"{savings:,.0f}" not in headline
+    # And no range is implied over a sweep the reader sees one bar of.
+    assert "Up to" not in headline
+
+
 def test_paybacks_beyond_a_battery_lifetime_become_a_sentence_not_bars() -> None:
     """When nothing pays back in time, bars are the wrong encoding and are dropped.
 
@@ -1131,6 +1389,15 @@ def test_every_drop_path_gives_the_savings_panel_the_same_height() -> None:
 
     Asserted on the axes' measured extents rather than on a mode flag, because the
     flag was right in the defect: the branch was taken and the layout was not.
+
+    **Compared against the top of each chart, not the raw panel height.** The panel
+    starts wherever the bands above it end, and those legitimately differ: a headline
+    that wraps to two lines pushes everything below it down, which is the layout
+    working rather than failing. Comparing raw heights conflated "the drop paths
+    share one rule" with "their headlines are the same length" — so when the
+    beyond-lifetime headline grew a second line, the rule was still being obeyed and
+    the test failed anyway. What the rule actually claims is that every drop path
+    takes the chart down to the *same floor*, and that is what is asserted.
     """
     two_panel = build_summary_card(build(), tariff=FLAT_TARIFF)
     drops = {
@@ -1145,30 +1412,113 @@ def test_every_drop_path_gives_the_savings_panel_the_same_height() -> None:
         assert len(figure.axes) == 1, f"{name}: the payback panel must be dropped"
 
     heights = {name: f.axes[0].get_position().height for name, f in drops.items()}
-    tallest, shortest = max(heights.values()), min(heights.values())
 
-    # Both bounds below are stated in absolute figure fractions rather than in terms
-    # of `_STATEMENT_BAND`. Deriving them from the band makes the yardstick move with
-    # the thing under test: widening the band widens the tolerance exactly as fast as
-    # it widens the gap, so the defect stays inside its own allowance and the test
-    # cannot see it. The band is an implementation detail; the card is 1200px and the
-    # reader sees fractions of it.
-    #
-    # A sentence occupies two lines of text, so the paths that draw one may sit at
-    # most that much lower than the paths that do not.
+    # The floor each panel reaches down to. The paths that draw a replacement
+    # sentence reserve a band below the panel for it, so they stop one band higher;
+    # every path within a group must agree closely.
+    floors = {name: f.axes[0].get_position().y0 for name, f in drops.items()}
+    silent = [floors["no cost"], floors["no positive savings"]]
+    assert abs(silent[0] - silent[1]) < 0.005, (
+        f"the silent drop paths must share one floor, got {floors}"
+    )
+    # The sentence path sits above the others by the band it reserves, and by no
+    # more: that band is two lines of text, and anything beyond it is the empty
+    # strip this test exists to catch.
     two_lines = 0.075
-    assert tallest - shortest <= two_lines, f"the drop paths must share one layout, got {heights}"
+    assert 0 < floors["beyond lifetime"] - silent[0] <= two_lines, (
+        f"the sentence path must clear only its own band, got {floors}"
+    )
 
     # And each must reclaim the dropped panel: roughly the two-panel height twice
     # over, less the gap that separated them. Anchored to what a reclaiming panel
     # actually reaches, because a layout that shrank every drop path uniformly would
     # still clear the two-panel figure while leaving the card empty.
+    #
+    # The allowance covers both bands a drop path may legitimately give up: the
+    # statement band, and a second headline line when the verdict wraps. Neither is
+    # empty surface — they are occupied by text — which is what separates them from
+    # the defect, and the floor assertions above are what pin that distinction.
     shared = two_panel.axes[0].get_position().height
+    allowance = two_lines + _HEADLINE_LINE
     for name, height in heights.items():
-        assert height >= 2 * shared - two_lines, (
+        assert height >= 2 * shared - allowance, (
             f"{name}: dropping the payback panel must reclaim its height "
             f"({height:.4f} against {shared:.4f} per panel when both are drawn)"
         )
+
+
+def panel_floor_row(path: Path) -> int:
+    """The PNG row where the savings panel's bottom rule is drawn.
+
+    Reads the written image rather than the figure. The quantity is the **floor of
+    the plotting area** — the horizontal rule the bars stand on and the x-axis labels
+    hang below — because that is what the drop-path rule actually fixes in place.
+
+    Deliberately *not* the lowest bar pixel, and not the zero line. Both of those
+    move with the data rather than with the layout: a card whose capacities lose
+    money draws bars below zero, so its lowest ink sits lower, and its zero line
+    sits far higher because most of the axis is negative. Measuring either one
+    compares three different quantities and calls the difference a defect.
+
+    Found as the widest near-full-width horizontal rule in the lower half of the
+    card, excluding the footer rule below it.
+    """
+    with Image.open(path) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=int)
+    height, width = pixels.shape[0], pixels.shape[1]
+    surface = np.array([252, 252, 251])
+    ink = np.abs(pixels - surface).sum(axis=2) > 20
+    # The panel's bottom spine spans the plot area, which is far wider than any text
+    # and narrower than the full card. The footer rule is excluded by stopping above
+    # it; `_draw_footer` puts it at figure y=0.106, i.e. row 1200*(1-0.106).
+    footer_row = int(height * (1 - 0.106))
+    counts = ink[:footer_row].sum(axis=1)
+    candidates = np.nonzero(counts > width * 0.6)[0]
+    return int(candidates.max()) if candidates.size else 0
+
+
+def test_every_drop_path_puts_the_savings_baseline_on_the_same_pixel_row(
+    tmp_path: Path,
+) -> None:
+    """The drop paths agree in the written image, not merely in their axes objects.
+
+    **Measured on the rendered PNG on purpose.** The neighbouring test asserts on
+    `get_position()`, which is the layout's own vocabulary — and a test expressed in
+    the same terms as the thing it checks cannot detect a defect in those terms. If
+    the geometry were ever computed correctly and drawn wrongly, every
+    `get_position()` assertion in this file would pass while the card shipped broken.
+
+    This is also the check that would have caught a *stale* card. The OPSD renders
+    were measured 54px away from the sample cases on exactly this quantity, which
+    looked like a layout divergence between fixtures; rebuilding both from source put
+    their baselines on the same row, because the OPSD PNGs on disk simply predated the
+    layout fix and had never been regenerated. Nothing about the axes could show that
+    — only the pixels could.
+    """
+    rows: dict[str, int] = {}
+    for name, result, tariff in [
+        ("no cost", build(cost_per_kwh=None), FLAT_TARIFF),
+        ("no positive savings", build(tariff=LOSING_TARIFF), LOSING_TARIFF),
+        ("beyond lifetime", beyond_lifetime(), FLAT_TARIFF),
+    ]:
+        path = tmp_path / f"{name.replace(' ', '_')}.png"
+        render_summary_card(result, path, tariff=tariff)
+        rows[name] = panel_floor_row(path)
+
+    assert all(row > 0 for row in rows.values()), f"every card must draw a panel, got {rows}"
+
+    # The paths that draw a replacement sentence stop one reserved band higher, so
+    # they are compared as a group against the paths that draw none, exactly as the
+    # `get_position()` test does — the difference being that these numbers come out
+    # of the file rather than out of the layout objects that produced it.
+    silent = [rows["no cost"], rows["no positive savings"]]
+    assert abs(silent[0] - silent[1]) <= 1, (
+        f"the silent drop paths must share one panel floor, got {rows}"
+    )
+    # A band of two lines of text on a 1200px card, and no more: the defect this
+    # guards left ~15% of the card (180px) empty above the footer.
+    gap = silent[0] - rows["beyond lifetime"]
+    assert 0 < gap <= 0.075 * CARD_PX, f"the sentence path must clear only its own band, got {rows}"
 
 
 def test_the_dropped_panel_does_not_leave_the_card_empty_above_the_footer() -> None:
@@ -1186,7 +1536,12 @@ def test_the_dropped_panel_does_not_leave_the_card_empty_above_the_footer() -> N
     renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
 
     axes = figure.axes[0]
-    furniture = axes.get_tightbbox(renderer).transformed(figure.transFigure.inverted())
+    # `get_tightbbox` is typed as optional — it returns None for an axes with
+    # nothing drawn in it. This one has bars and labels, so the narrowing is a
+    # statement about the fixture rather than a guard against a real case.
+    tightbbox = axes.get_tightbbox(renderer)
+    assert tightbbox is not None, "the savings panel must have drawn something"
+    furniture = tightbbox.transformed(figure.transFigure.inverted())
     statement = [t for t in figure.texts if "pays back within" in t.get_text()]
     assert statement, "the beyond-lifetime card carries the replacement sentence"
 

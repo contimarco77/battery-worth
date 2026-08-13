@@ -61,7 +61,7 @@ from matplotlib.container import BarContainer
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL
 from battery_worth.analysis import recommended_scenario
@@ -142,6 +142,9 @@ _PLOT_WIDTH = 1.0 - _PLOT_LEFT - _MARGIN
 # comfortably legible, which is the only size test that matters in a feed.
 _SIZE_HEADLINE_MAX = 54
 _SIZE_HEADLINE_MIN = 30
+# A headline needs two words before it can be broken across lines; a single word has
+# no break point, and a mid-word hyphenation would be worse than the small size.
+_MIN_WORDS_TO_WRAP = 2
 _SIZE_KICKER = 17
 _SIZE_STAT_VALUE = 32
 _SIZE_STAT_LABEL = 14
@@ -259,7 +262,7 @@ def _build(result: AnalysisResult, tariff: Tariff | None, repo_url: str) -> Figu
     figure = Figure(figsize=(_FIG_INCHES, _FIG_INCHES), dpi=_DPI, facecolor=_SURFACE)
     # An explicit Agg canvas, rather than going through pyplot: the figure is
     # never shown, and pyplot's global registry would hold every card a
-    # long-running caller renders. It also gives `_fit_headline_size` a renderer
+    # long-running caller renders. It also gives `_fit_headline` a renderer
     # to measure text against, which a bare Figure does not have.
     FigureCanvasAgg(figure)
 
@@ -318,7 +321,20 @@ def headline_for(scenarios: list[ScenarioResult]) -> str:
     """
     batteries = [s for s in scenarios if s.capacity_kwh > 0]
     if not batteries:
-        return "No battery was worth it here"
+        # A sweep with no battery in it produced no answer, and the card must not
+        # report one. This used to read "No battery was worth it here" over the
+        # subtitle "No capacity in this sweep saved money against the current
+        # tariff" — a verdict on batteries, stated about a run that analysed none.
+        #
+        # The mechanism was that a baseline-only sweep has no *positive* savings, so
+        # it fell through into the no-positive-savings branch, whose sentence is true
+        # only when there were capacities to lose money. Same trap as the superlative
+        # over a single data point: an absence of evidence printed as evidence of
+        # absence, in the card's largest text.
+        #
+        # A near-empty card for a degenerate input is the honest outcome. It reads as
+        # a run that produced no answer, rather than as an answer of "no".
+        return "No battery capacity was analysed"
 
     earning = [s for s in batteries if s.annual_savings_eur > 0]
     if not earning:
@@ -409,16 +425,29 @@ def _saturation_headline(earning: list[ScenarioResult]) -> str:
     back to the largest absolute savings, which recommends the biggest battery —
     the exact trap this tool exists to expose — so the headline names no size and
     reports where the curve flattens instead. With too few points to find a knee,
-    it falls back again to the plain best figure.
+    there is no flattening to report and the headline has to say something else.
+
+    What it must *not* say is the savings figure. The fallback used to read "Up to
+    462 EUR/year in savings" directly above a stat row printing "462 EUR / saved per
+    year at 20 kWh" — the same number twice, two centimetres apart, spending the
+    card's largest text on the one quantity already carried by the element
+    underneath it. That is the no-repeat rule the single-capacity headline was
+    written to obey, and breaking it here would weaken the case for that decision.
+
+    "Up to" was independently wrong on the card that reaches this branch: it implies
+    a range, and the no-cost-no-knee sweep draws **one bar**. A reader cannot see the
+    range the phrase promises because there is not one.
+
+    What the stat row cannot say is *why there is no payback here*: no cost was
+    supplied, so the card is reporting savings only and is deliberately declining to
+    rank sizes or call anything worth buying. That is a caveat about how to read
+    every figure below it, invisible in a stat row, and the reason this branch
+    recommends nothing in the first place.
     """
     knee = _saturation_knee(earning)
     if knee is not None:
         return f"Savings flatten beyond {_capacity_label(knee)}"
-    return f"Up to {_earning_max(earning):,.0f} EUR/year in savings"
-
-
-def _earning_max(earning: list[ScenarioResult]) -> float:
-    return max(s.annual_savings_eur for s in earning)
+    return "Savings only — no battery cost given"
 
 
 def _saturation_knee(earning: list[ScenarioResult]) -> float | None:
@@ -496,23 +525,41 @@ def _draw_headline(figure: Figure, scenarios: list[ScenarioResult], top: float) 
         va="top",
         ha="left",
     )
-    size = _fit_headline_size(figure, headline)
+    drawn, size = _fit_headline(figure, headline)
     figure.text(
         _MARGIN,
         top - 0.042,
-        headline,
+        drawn,
         fontfamily=_FONT,
         fontsize=size,
         fontweight="bold",
         color=_INK,
         va="top",
         ha="left",
+        linespacing=1.15,
     )
-    return top - 0.042 - _headline_height(size)
+    return top - 0.042 - _headline_height(size) * (1 + drawn.count("\n"))
 
 
-def _fit_headline_size(figure: Figure, headline: str) -> int:
-    """Largest headline size at which the text actually fits the card's width.
+def _text_width(figure: Figure, text: str, size: int, weight: str = "bold") -> float:
+    """The rendered width of one line, in pixels, at `size` and `weight`.
+
+    The weight is a parameter because it changes the answer: DejaVu Bold is wider
+    than Regular at the same point size, so measuring the card's regular-weight
+    sentences against a bold probe would wrap them earlier than they need to be.
+    """
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)  # attached in `build_summary_card`
+    # matplotlib ships no stubs, so `get_renderer` is untyped to mypy strict.
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+    probe = figure.text(0, 0, text, fontfamily=_FONT, fontsize=size, fontweight=weight)
+    width = probe.get_window_extent(renderer=renderer).width
+    probe.remove()
+    return float(width)
+
+
+def _fit_headline(figure: Figure, headline: str) -> tuple[str, int]:
+    """The headline as it will actually be drawn: possibly wrapped, and sized to fit.
 
     **Measured, not estimated from the character count.** A character budget is a
     guess about average glyph width, and it guesses wrong on exactly the strings
@@ -521,19 +568,86 @@ def _fit_headline_size(figure: Figure, headline: str) -> int:
     it wrong clips the single most important word on the card, and a clipped
     headline is worse than a small one. So the renderer asks matplotlib for the
     rendered width and steps down until it fits.
+
+    **The size floor is a floor, not a fallback.** The previous version stepped down
+    to `_SIZE_HEADLINE_MIN` and then returned it unconditionally — returning a size
+    it had just measured as *not* fitting. "No size pays back before the battery
+    wears out" is 1120px at 30pt against a 1020px limit, so the longest sentence the
+    card can produce was drawn 100px over the edge and clipped at the card boundary.
+    A shrink-to-fit loop whose last step gives up silently is not a fit; it is the
+    unclipped case reported as success.
+
+    So when the floor is reached and the line still does not fit, the headline
+    **wraps** rather than shrinking further. Two lines at a legible size beat one
+    line at an illegible one: the headline has to survive the thumbnail test, which
+    is the whole reason a floor exists. Wrapping is tried at each size from the top,
+    so a string that fits on one line never gets broken.
     """
-    canvas = figure.canvas
-    assert isinstance(canvas, FigureCanvasAgg)  # attached in `build_summary_card`
-    # matplotlib ships no stubs, so `get_renderer` is untyped to mypy strict.
-    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
     limit = _WIDTH * CARD_PX
     for size in range(_SIZE_HEADLINE_MAX, _SIZE_HEADLINE_MIN - 1, -2):
-        probe = figure.text(0, 0, headline, fontfamily=_FONT, fontsize=size, fontweight="bold")
-        width = probe.get_window_extent(renderer=renderer).width
-        probe.remove()
-        if width <= limit:
-            return size
-    return _SIZE_HEADLINE_MIN
+        if _text_width(figure, headline, size) <= limit:
+            return headline, size
+    for size in range(_SIZE_HEADLINE_MAX, _SIZE_HEADLINE_MIN - 1, -2):
+        wrapped = _wrap_headline(figure, headline, size, limit)
+        if wrapped is not None:
+            return wrapped, size
+    # Every size and both layouts exhausted: draw the smallest, which is the least
+    # bad of the remaining options. Unreachable for any headline this card produces
+    # — the longest is 45 characters and wraps at 46pt — and kept as a total function
+    # rather than an assertion because a clipped headline is still a card, and
+    # raising here would turn a cosmetic defect into a failed render.
+    return headline, _SIZE_HEADLINE_MIN
+
+
+def _wrap_headline(figure: Figure, headline: str, size: int, limit: float) -> str | None:
+    """`headline` broken across two lines at `size`, or `None` if it will not fit.
+
+    Split at the word boundary that comes closest to halving the *rendered* width,
+    so the two lines are visually balanced rather than one long line over an orphan.
+    Both lines must clear the limit for the split to count.
+    """
+    words = headline.split()
+    if len(words) < _MIN_WORDS_TO_WRAP:
+        return None
+    best: tuple[float, str] | None = None
+    for split in range(1, len(words)):
+        first, second = " ".join(words[:split]), " ".join(words[split:])
+        widths = (
+            _text_width(figure, first, size),
+            _text_width(figure, second, size),
+        )
+        if max(widths) > limit:
+            continue
+        imbalance = abs(widths[0] - widths[1])
+        if best is None or imbalance < best[0]:
+            best = (imbalance, f"{first}\n{second}")
+    return None if best is None else best[1]
+
+
+def _wrap_to_width(figure: Figure, sentence: str, size: int) -> str:
+    """`sentence` broken onto as many lines as it takes to stay inside the margins.
+
+    Greedy fill against the *measured* width at the size it will actually be drawn,
+    for the same reason the headline is measured rather than counted: a character
+    budget guesses at glyph widths and guesses worst on the strings that matter.
+
+    Unlike the headline, this takes as many lines as it needs instead of failing over
+    to a smaller size. The sentence is already the card's small text, and text below
+    the headline's floor stops being readable in a feed at thumbnail scale.
+    """
+    limit = _WIDTH * CARD_PX
+    lines: list[str] = []
+    current = ""
+    for word in sentence.split():
+        candidate = f"{current} {word}".strip()
+        if current and _text_width(figure, candidate, size, weight="normal") > limit:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
 
 
 def _headline_height(size: int) -> float:
@@ -578,15 +692,34 @@ def _draw_stats(
     which is a property of the curve, and no single scenario can express it.
     """
     if best is None:
+        # Two different runs land here and they need different sentences. A sweep
+        # that analysed capacities and found none of them profitable is a *finding*;
+        # a sweep with no capacity in it at all is a run that produced no finding.
+        # One sentence for both stated the first about the second — the card telling
+        # the reader no capacity saved money when no capacity had been tried.
+        # `scenarios` is the battery-only list the caller built, so "empty" is
+        # precisely "no capacity was analysed".
+        subtitle = (
+            "No capacity in this sweep saved money against the current tariff."
+            if scenarios
+            else "Only the baseline was simulated, so nothing was compared."
+        )
+        # Wrapped to the card's own width rather than trusted to fit. This sentence
+        # is drawn at a fixed size with no shrink-to-fit, so its length is the only
+        # thing keeping it on the card — and the baseline-only variant was written
+        # long enough to run off the right edge, reintroducing at the subtitle the
+        # exact clipping that had just been fixed at the headline. A string is not a
+        # width guarantee; measuring it is.
         figure.text(
             _MARGIN,
             top - 0.01,
-            "No capacity in this sweep saved money against the current tariff.",
+            _wrap_to_width(figure, subtitle, _SIZE_STAT_LABEL + 3),
             fontfamily=_FONT,
             fontsize=_SIZE_STAT_LABEL + 3,
             color=_INK_SECONDARY,
             va="top",
             ha="left",
+            linespacing=1.4,
         )
         return top - 0.075
 
@@ -932,7 +1065,7 @@ def _draw_savings_panel(axes: Axes, scenarios: list[ScenarioResult], label_x: bo
         emphasized = losing if best is None else scenario.capacity_kwh == best.capacity_kwh
         bar.set_alpha(1.0 if emphasized else 0.32)
 
-    axes.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    _format_money_ticks(axes)
     axes.set_ylabel(
         "EUR / year", fontfamily=_FONT, fontsize=_SIZE_AXIS, color=_INK_MUTED, labelpad=8
     )
@@ -966,6 +1099,33 @@ def _draw_savings_panel(axes: Axes, scenarios: list[ScenarioResult], label_x: bo
 
     _pad_range(axes, values)
     _draw_zero_line(axes, values)
+
+
+def _format_money_ticks(axes: Axes) -> None:
+    """Label every gridline with the value it is actually at.
+
+    The defect this replaces: a bare `f"{v:,.0f}"` formatter over matplotlib's
+    default locator. The locator is free to choose a fractional step, and on a panel
+    whose bars are 8/15/18 EUR it chose **2.5** — so the ticks sat at 0, 2.5, 5, 7.5,
+    10 ... and were printed as "0, 2, 5, 8, 10". The gridline labelled 2 was at 2.5
+    and the one labelled 8 was at 7.5. Every reader checking a bar against a gridline
+    read a wrong number off it, and the panel's own axis was the thing lying.
+
+    Rounding the *label* to more decimals would fix the disagreement by printing
+    "2.5", but money on this card is whole EUR everywhere else — the bar labels, the
+    stat row, the report — and a y-axis in halves beside bar labels in units is its
+    own inconsistency. So the fix is at the locator: tick *locations* are constrained
+    to integers, and then an integer format is honest by construction rather than by
+    coincidence of the step.
+
+    `MaxNLocator(integer=True)` is the whole fix. It is applied on every savings
+    panel and not only the small-magnitude ones: special-casing by magnitude would
+    leave the same latent disagreement for whatever range next produced a fractional
+    step, which is exactly how this one survived — every earlier card had savings in
+    the hundreds, where the chosen step happened to be integral.
+    """
+    axes.yaxis.set_major_locator(MaxNLocator(integer=True))
+    axes.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
 
 
 def _draw_payback_panel(axes: Axes, scenarios: list[ScenarioResult]) -> None:
