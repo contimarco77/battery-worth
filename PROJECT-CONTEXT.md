@@ -1118,9 +1118,22 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   is deferred to v0.2 — decision and rationale in "Locked decisions". Per the
   standing note from 2026-08-11 (3), the launch posts depend on the README.
 - **2026-08-13** — **Docker image, and a timezone default that hid a total platform
-  failure.** Four commits: `dbd405e` (session cross-references), `18a430e` (`tzdata`
-  declared), `bfb5197` (the image), `2d8fba3` (the analysis timezone stated as a
-  caveat). Suite 328 → 334, all four gates clean.
+  failure, and an entry that named four commits for a ten-commit day.**
+  **Ten commits**, in two halves. Docker and timezone: `dbd405e` (session
+  cross-references), `18a430e` (`tzdata` declared), `bfb5197` (the image),
+  `2d8fba3` (the analysis timezone stated as a caveat), `b629c81` (this entry, as
+  first written). Then the afternoon: `a3677a5` (the liability position),
+  `c949a8a` (pandas' mixed-offset error replaced with one the user can act on),
+  and three rounds on the summary card — `54878ab`, `416938a`, `1295d50`,
+  described at the end of this entry. Suite 328 → 334 across the Docker half,
+  354 by the end of the day, all four gates clean.
+
+  *This entry named four of the ten, because it was written at 11:46 and the day
+  continued until 17:52.* It was amended on 14 August, after `git log`
+  contradicted the handoff document that had carried the same count forward.
+  **A log entry written mid-session records a session that has not happened
+  yet**; one entry per day survives as a convention, but the entry is written
+  last.
 
   *The brief's premise about slim images was false, and measurement caught it.* The
   Docker task asserted that Debian slim images ship no tz database, and gave that as
@@ -1213,3 +1226,152 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
   **Next: the README** — real card screenshot (flat tariff), the "Why not
   battery_sim?" section, the Docker path mapping and `--user` line. Then launch
   posts, which depend on it. The optional LLM layer remains deferred to v0.2.
+
+  *Three rounds on the summary card, appended on 14 August.* The headline
+  contradicted its own payback panel: two rules held different definitions of
+  "pays back", the twenty-year threshold governing the panel while the headline
+  was gated on savings being positive. On `residential6` the card read "5 kWh
+  pays back fastest" above "No capacity pays back within 20 years". The split
+  reached the headline, the emphasis, the stat row, the report's Verdict, the
+  terminal summary, the Seasonal analysis intro, and a line advising a larger
+  battery underneath a negative verdict. `54878ab` gives every verdict one
+  threshold. **A definition duplicated across seven sites is not a duplication;
+  it is seven definitions that happen to agree today.**
+
+  *Two tests that passed under mutation.* The first expressed both of its bounds
+  in terms of `_STATEMENT_BAND`, so raising the constant widened the tolerance
+  exactly as fast as the defect; the second was a bare "does not exceed" that
+  passed with 0.1px to spare. Both were found by measuring, not by reading the
+  green. Panel height was unified across the drop paths and `_STATEMENT_BAND`
+  resized, 0.115 → 0.068. Separately, `_fit_headline_size` returned the minimum
+  after measuring that it did not fit — a silent surrender dressed as a
+  guarantee — and `headline_of` in the tests took "the largest bold text", which
+  grabbed a 32pt stat whenever the headline shrank: a helper that blinded the
+  test in precisely the case it existed to cover.
+
+  *A discrepancy attributed to the code was a stale file.* `residential6.png`
+  predated the layout commit by sixteen minutes. `get_position()` was not lying.
+  First of three stale-artifact diagnoses in two days; see 2026-08-14 for the
+  other two and for the fix. A test fixture was also silently invalidated by a
+  locator change, for the second time; it now searches for a value that
+  reproduces the geometry and raises if it finds none, instead of trusting a
+  hand-written constant.
+
+  *A correct fix with an unmeasured side effect on the healthy path.* The
+  integer locator made the axis labels honest — the gridline labelled "2" had
+  been sitting at 2.5 — and doubled the gridlines on every sound card, from 4 to
+  10 on `60_days` and 6 to 10 on `residential6`. The doubling was not reported.
+  Same shape as the `AnalysisTimezone` refactor: the fix was right and its blast
+  radius was not measured. `1295d50` then made the card's own render print its
+  gridline counts, so that what only the eye could check became a number.
+  **That instrument shipped with the same blind spot as the code it was
+  watching** — see 2026-08-14.
+
+- **2026-08-14** — **The instrument built to end the card's blind spots had one,
+  in the place it was built for.** Commits: `ef59b80` (the tick cap), `02fe6bb`
+  (the instrument), `c7f47aa` (example cards into the repo), then the OPSD
+  attribution, the gathered README constraints, and the export sweep intro.
+  Suite 354 → 358, all four gates clean.
+
+  *The tick decision closed at 4, and none of the options on the table touched
+  the card that needed one.* The open question was whether to raise the cap from
+  4 to 5. Measured per card: `no_cost` renders four gridlines at both values,
+  `residential4` and `residential6` — the two launch cards — render four at
+  both, and only `single_capacity` moves, from three to five. The handoff's
+  strongest argument for raising it was `no_cost`, on the grounds that both
+  flattening bars float above the last labelled line. Looking at the card: 442
+  sits below the 450 gridline and 462 above it, so the line passes between
+  exactly the two bars the headline is about. It is the best reference the axis
+  could have produced. **The one card where the complaint is true is
+  `residential6`, where 46 and 49 both clear the 45 line — and neither 5 nor a
+  minimum-tick floor moves it. Only 6 does, which degrades everything else.**
+  `_MAX_SAVINGS_TICKS = 4` stands.
+
+  *The gridline counter walked `figure.axes` matching the label "EUR / year", so
+  it reported the savings panel and was blind to the payback panel below it.*
+  Demonstrated rather than argued: the old matcher returns `4` for `ausgrid`,
+  which has a payback panel, and `4` for `no_cost`, which does not. **The same
+  number for two different states is how a green instrument reports nothing** —
+  third instance of that shape after `bars_of()` matching an empty list and the
+  `ruff format` gate. It also returned `0` for both "panel with no ticks" and
+  "no panel at all". `02fe6bb` identifies the panels structurally by position
+  rather than by label text, prints tick values rather than counts, and reports
+  `dropped` as distinct from any number.
+
+  *`ef59b80`'s message says "every healthy panel"; the cap reaches half of
+  them.* `_format_money_ticks` has one call site, in `_draw_savings_panel`. The
+  payback panel never touches `set_major_locator` and uses matplotlib's default.
+  The constant is named `_MAX_SAVINGS_TICKS` and the name is accurate — **the
+  defect was not a lie in the name but a gap in the coverage, and the accurate
+  name is what made the gap invisible.** Measured consequence, visible for the
+  first time: `ausgrid` draws six gridlines on the payback panel against four on
+  the savings panel above it, 50% more density on the lower half of the same
+  card. `single_capacity`, `60_days` and `residential4` land on four by the
+  arithmetic of their ranges, not by constraint. Left as a known limit; capping
+  an axis that runs to 34.5 years at four ticks is a separate measurement.
+
+  *`baseline_only` renders zero axes, not one.* The structural hypothesis behind
+  the new counter was two panels or one; running it found three states, because
+  a sweep with only the zero-capacity baseline is filtered to empty and the
+  chart is skipped entirely. Corrected by measurement rather than defended.
+
+  *The two launch cards were produced by a command line kept nowhere, and were
+  stale by mtime twice while being identical in content both times.* Neither
+  `residential4.png` nor `residential6.png` was in
+  `scripts/render_sample_cards.py`'s nine cases; they came from an ad-hoc
+  invocation that lived only in a shell history. Both re-renders came back
+  byte-identical to what was already on disk. **The defect was never drift — it
+  was that drift could not be ruled out without an investigation, twice, on the
+  two images the launch depends on.** The script now renders them behind an
+  opt-in path (`BATTERY_WORTH_OPSD_DIR` / `--opsd-input`, output via
+  `BATTERY_WORTH_OPSD_CARDS` / `--opsd-output`), skipping with the missing
+  filenames named rather than silently, so it still runs for a stranger with no
+  OPSD data. The nine coverage cases stay: they exercise renderer branches —
+  dropped panel, negative savings, clipped bars, no chart at all — that no real
+  household produces.
+
+  *The cards moved into `docs/assets/` and the CC BY 4.0 attribution arrived one
+  commit later.* `c7f47aa` put two images derived from OPSD data into the
+  repository; the attribution notice the licence requires followed separately.
+  Nothing was distributed in between and the history is not being rewritten, but
+  the ordering is worth recording: **the obligation attaches to the artifact, so
+  it belongs in the commit that introduces it.** A one-line `.gitignore` removal
+  would have committed the source CSVs along with the cards, making the deferred
+  "committed real fixture" decision by accident and without the attribution; it
+  was reverted and `scratchpad/` stays ignored.
+
+  *The README's constraints were scattered across a session log entry and an
+  untracked handoff document, neither of which the person writing the README
+  would open.* Gathered into the `## README (decided, with rationale)` section
+  alongside the other decided sections. It now also records what the card footer
+  structurally cannot: the example data is from Konstanz, southern Germany, in
+  `Europe/Berlin`. That is the same reason the screenshots use a flat tariff
+  instead of the Italian bands — but stated rather than avoided.
+
+  *A replacement sentence that was false in the same way as the one it
+  replaced.* The report's sensitivity section introduced its table with "At an
+  export price of 0.10 EUR/kWh (the one used above), here is the same sweep
+  re-costed", above columns that run across the whole sweep. The wording
+  specified to fix it ended "…is one of the columns", which holds for the
+  default 0.5x/1x/1.5x sweep and fails under `--export-price-sweep 0.20,0.30
+  --export-price 0.10`. **A convenient property of the default configuration was
+  read as a guarantee of the code** — the fixture-regularity failure again, one
+  layer up. The shipped sentence branches on membership, tested on the rendered
+  label rather than on float equality. Two tests assert what the table is rather
+  than what the prose says, since a test pinning the replacement string would
+  pass on any future sentence equally false; the first draft of the second test
+  did exactly that and passed under mutation.
+
+  **Open, recorded rather than fixed.** The configured export price is not marked
+  in the sensitivity table, so the prose now promises a column the reader has to
+  find by eye. On `residential6`, three bars stand at near-full height for 39, 46
+  and 49 EUR, because the axis scales to the data — nothing is false and the
+  impression is the opposite of the verdict, on the card carrying the project's
+  strongest message. On the same card the caption reads `never pays back`
+  beneath a computed `76.5 years`: the twenty-year threshold is correct and its
+  three-word rendering says more than the engine did. And in the dropped-panel
+  path, "Usable battery capacity" and "Years to pay back" sit about twenty pixels
+  apart.
+
+  **Next: the README.** It is the last block before launch and its constraints
+  are now in one section.
