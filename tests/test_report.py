@@ -309,6 +309,96 @@ def test_sensitivity_table_renders_as_valid_markdown_rows() -> None:
     assert len(widths) == 1, f"ragged sensitivity table: {widths}"
 
 
+def test_sensitivity_prose_does_not_claim_the_table_is_at_one_price() -> None:
+    """The intro must describe a sweep, because a sweep is what the table is.
+
+    It once read "At an export price of 0.1 EUR/kWh (the one used above), here is
+    the same sweep re-costed" above a table whose columns run *across* the sweep.
+    The numbers were right and the sentence was false, in the section carrying the
+    project's central claim — that the import/export spread dominates the result,
+    not the battery. A reader who believes the sentence reads the table that proves
+    the point as three capacities priced one way.
+
+    Asserted against the table rather than the replacement wording: the prose is
+    checked for the shape of claim that was wrong — attributing the whole table to
+    a single one of its prices — so any future sentence that reintroduces it fails
+    too, not just the exact string that did.
+    """
+    result = build_result()
+    sensitivity = result.export_sensitivity
+    assert sensitivity is not None
+
+    # The premise of the whole check. If the sweep ever collapses to one price,
+    # a singular sentence would be *true* and this test would be policing nothing.
+    assert len(sensitivity.export_prices) > 1, "sweep must span more than one export price"
+
+    markdown = render_report(result, FLAT_TARIFF)
+    section = markdown.split("How much this depends on your export price")[1].split("## ")[0]
+    prose = "\n".join(ln for ln in section.splitlines() if not ln.startswith("|"))
+
+    # Every price in the sweep is a column, so no single one of them may be
+    # offered as the price the table is drawn at.
+    header = next(ln for ln in section.splitlines() if ln.startswith("| Capacity"))
+    for price in sensitivity.export_prices:
+        label = f"{price:.3f}".rstrip("0").rstrip(".")
+        assert f"| {label} EUR/kWh " in header, f"{label} is not a column of the table"
+        for singular in (
+            f"At an export price of {label}",
+            f"at an export price of {label}",
+            f"{label} EUR/kWh (the one used above)",
+        ):
+            assert singular not in prose, (
+                f"prose attributes the whole sweep to the single price {label}: {singular!r}"
+            )
+
+
+def test_sensitivity_prose_only_claims_the_configured_price_is_a_column_when_it_is() -> None:
+    """A sweep chosen with --export-price-sweep need not contain the configured price.
+
+    The default sweep always does, by construction in `_resolve_export_prices`, so
+    the common path can point the reader at their own column. An explicit sweep
+    that brackets elsewhere cannot, and saying otherwise would be false in exactly
+    the way the sentence this replaced was.
+    """
+    result = run_analysis(
+        make_year(),
+        make_report(),
+        capacities=[0, 5],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
+        export_price_sweep=[0.20, 0.30],
+    )
+    sensitivity = result.export_sensitivity
+    assert sensitivity is not None
+    configured = sensitivity.baseline_export_price_eur_kwh
+    assert configured not in sensitivity.export_prices  # the case under test
+
+    section = (
+        render_report(result, FLAT_TARIFF)
+        .split("How much this depends on your export price")[1]
+        .split("## ")[0]
+    )
+    prose = "\n".join(ln for ln in section.splitlines() if not ln.startswith("|"))
+    header = next(ln for ln in section.splitlines() if ln.startswith("| Capacity"))
+
+    label = f"{configured:.3f}".rstrip("0").rstrip(".")
+    assert f"| {label} EUR/kWh " not in header  # premise, restated on the rendered table
+
+    # The claim under test is "the configured price is in this table", however it
+    # happens to be phrased. Pinning the replacement string instead would pass on
+    # any future sentence that makes the same false claim in different words, so
+    # the check is: the prose may not point the reader at a column that is not
+    # there. It names the configured price — it must do so as an absence.
+    mentions = [ln for ln in prose.splitlines() if f"{label} EUR/kWh" in ln]
+    assert mentions, "the configured price should still be named, so the reader can place it"
+    context = " ".join(mentions)
+    assert "not" in context, (
+        f"prose names {label} EUR/kWh without saying it is absent from the sweep, "
+        f"pointing the reader at a column that does not exist: {context!r}"
+    )
+
+
 def test_seasonal_table_renders_one_row_per_bucket() -> None:
     result = build_result()
     assert result.seasonal is not None

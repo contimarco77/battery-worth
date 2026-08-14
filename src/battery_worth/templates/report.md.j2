@@ -63,8 +63,11 @@ Savings and cycles are annualized over the {{ r.days_analyzed }} days analysed.
 
 Every kWh the battery keeps at home is worth the **spread** between what you pay to
 import and what you are paid to export — not the import price alone. A generous
-feed-in tariff is what stops a battery from paying off. At an export price of
-{{ sensitivity.baseline_export_price_eur_kwh | price }} EUR/kWh (the one used above), here is the same sweep re-costed:
+feed-in tariff is what stops a battery from paying off. Greedy self-consumption never
+reads a price, so the energy flows are the same at every export price and only the
+costing changes. The same simulation is re-costed below across the sweep;
+{% if configured_price_in_sweep %}{{ sensitivity.baseline_export_price_eur_kwh | price }} EUR/kWh is one of the columns:{% else %}{{ sensitivity.baseline_export_price_eur_kwh | price }} EUR/kWh, the price used above, is not among the columns
+of this sweep:{% endif %}
 
 | Capacity |{% for p in sensitivity.export_prices %} {{ p | price }} EUR/kWh |{% endfor %}
 

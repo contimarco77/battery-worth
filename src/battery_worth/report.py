@@ -31,6 +31,7 @@ from battery_worth.models import (
     HIGH_SELF_CONSUMPTION,
     AnalysisResult,
     AnalysisTimezone,
+    ExportPriceSensitivity,
     ScenarioResult,
     Tariff,
     TariffKind,
@@ -90,6 +91,13 @@ def render_report(
             best=best,
             totals=_totals(reference),
             sensitivity=result.export_sensitivity,
+            # The sensitivity section says the configured price is one of the
+            # columns. By default it is — `_resolve_export_prices` puts it there
+            # on purpose — but `--export-price-sweep` can name a range that
+            # excludes it, and then the sentence would be false in the same way
+            # the one it replaced was. Computed here so the template only picks a
+            # branch, never a fact.
+            configured_price_in_sweep=_configured_price_is_a_column(result.export_sensitivity),
             seasonal=result.seasonal,
             seasonal_note=_seasonal_note(result),
             has_payback=any(s.battery_cost_eur is not None for s in result.scenarios),
@@ -207,6 +215,22 @@ def _filter_years(value: float | None) -> str:
 
 def _filter_round0(value: float) -> str:
     return f"{value:,.0f}"
+
+
+def _configured_price_is_a_column(
+    sensitivity: ExportPriceSensitivity | None,
+) -> bool:
+    """Does the sensitivity grid actually contain the price the analysis was costed at?
+
+    Compared on the *rendered* label rather than the float, because that is what
+    the claim in the report is about: the reader is being told to find a column,
+    and two prices that print identically are the same column to them. It also
+    sidesteps the float equality that `round(configured * factor, 6)` invites.
+    """
+    if sensitivity is None:
+        return False
+    configured = _filter_price(sensitivity.baseline_export_price_eur_kwh)
+    return any(_filter_price(price) == configured for price in sensitivity.export_prices)
 
 
 def _largest_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult:

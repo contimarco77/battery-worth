@@ -198,7 +198,7 @@ liability decision in "Locked decisions" — the disclaimer's protection is the 
 not making unverified claims, so a known silent defect cannot live only in the
 roadmap.
 
-**Milestone 2 is closed.** Suite: 356 tests passing, all four gates clean
+**Milestone 2 is closed.** Suite: 358 tests passing, all four gates clean
 (see "Definition of done").
 
 ## Validated invariants
