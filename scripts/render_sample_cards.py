@@ -12,6 +12,16 @@ throwaway snippet retyped each session.
 Output goes to `scratchpad/cards/` (git-ignored), one self-describing filename per
 case, with the absolute paths printed at the end so they can be opened directly.
 
+Two kinds of card come out of this, and the table says which is which:
+
+- **coverage** — the nine below, one per renderer branch. Read to check a branch
+  still draws something sane.
+- **launch** — the two OPSD households whose cards are the README screenshots.
+  Read to check the picture a stranger sees is current with HEAD. They need the
+  git-ignored OPSD extract (`scratchpad/opsd/`, overridable via
+  `BATTERY_WORTH_OPSD_DIR` / `--opsd-input`); without it they are skipped with a
+  message naming the missing path, and the nine still render.
+
 The cases are the fixture plus every degenerate input the fixture does not
 exercise. Each one takes a branch that does not exist for the happy path:
 
@@ -52,11 +62,13 @@ dataset is not in the repo; `scripts/extract_ausgrid_customer.py` regenerates it
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import warnings
 from pathlib import Path
 
 import pandas as pd
+from matplotlib.axes import Axes
 
 from battery_worth.analysis import run_analysis
 from battery_worth.card import build_summary_card, render_summary_card
@@ -76,6 +88,31 @@ DEFAULT_FIXTURE = (
     / "customer_1_2012-2013.csv"
 )
 DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "scratchpad" / "cards"
+
+_SCRATCHPAD = Path(__file__).resolve().parent.parent / "scratchpad"
+# The two OPSD households whose cards are the README screenshots. They are not
+# coverage cases — every branch they take is already covered by the nine — and they
+# are here for the opposite reason: they are the cards a stranger sees first, so
+# they must be reproducible from a command rather than from a shell invocation
+# somebody typed once and did not keep. Both were rendered before the tick cap
+# landed, which is exactly the failure mode an unreproducible artifact has.
+#
+# Opt-in, and silent-skip-free: the OPSD extract is git-ignored and nobody who
+# clones this repo has it, so the script must still run for them, and must say
+# plainly which paths it looked for rather than quietly rendering nine cards.
+OPSD_INPUT = Path(os.environ.get("BATTERY_WORTH_OPSD_DIR", _SCRATCHPAD / "opsd"))
+OPSD_OUTPUT = Path(os.environ.get("BATTERY_WORTH_OPSD_CARDS", _SCRATCHPAD / "cards" / "opsd"))
+OPSD_HOUSEHOLDS = ("residential4", "residential6")
+OPSD_TIMEZONE = "Europe/Berlin"
+# The dataset ships raw cumulative meter readings under its own column names; the
+# extraction script preserves both rather than normalising, so the tool's own
+# --cumulative auto-detection is what gets exercised on the launch cards too.
+OPSD_MAPPING = ColumnMapping(
+    timestamp="utc_timestamp",
+    grid_import="grid_import",
+    grid_export="grid_export",
+    pv_production="pv",
+)
 
 MAPPING = ColumnMapping(
     timestamp="timestamp", consumption="consumption", pv_production="pv_production"
@@ -135,34 +172,103 @@ def analyze(
     )
 
 
-def savings_tick_count(result: AnalysisResult, tariff: Tariff) -> int:
-    """Gridlines actually drawn on the card's savings panel.
+DROPPED = "dropped"
 
-    Counts the ticks *inside* the y-limits, which is what the reader sees: the
-    locator can place one past the axis end, and that one is never drawn.
 
-    Rebuilds the figure rather than reading it back off the PNG. The number wanted
-    is the locator's decision, and the axis object states it directly; recovering it
-    from pixels would mean re-deriving it from rendered hairlines.
+def drawn_ticks(axes: Axes) -> list[float]:
+    """The y tick locations actually drawn on `axes`, in order.
+
+    Keeps only the ticks *inside* the y-limits and carrying a label, which is what
+    the reader sees: the locator can place one past the axis end, and that one is
+    never drawn.
+    """
+    low, high = axes.get_ylim()
+    return [
+        float(location)
+        for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True)
+        if label.get_text() and low <= location <= high
+    ]
+
+
+def panel_ticks(result: AnalysisResult, tariff: Tariff) -> dict[str, list[float] | str]:
+    """Both panels' drawn gridlines, keyed by panel, one entry each.
+
+    **Panels are identified by position, not by axis label.** Reading the y-label —
+    matching `"EUR / year"` — is what this function used to do, and it is why the
+    payback panel went unmeasured for as long as it did: the string only ever
+    matched the savings panel, so the counter walked past the one panel whose
+    locator is uncapped and reported a single number as if it were the card's.
+    Worse, it returned `0` both for "the payback panel is drawn with no ticks" and
+    for "there is no payback panel", making the two indistinguishable in the output.
+
+    The structural fact is `_draw_chart`: it is the only place in `card.py` that
+    creates axes, it does so with `figure.add_axes` in exactly one order, and the
+    figure carries no other axes at all. So `figure.axes[0]` is the savings panel on
+    every path, and `figure.axes[1]` is the payback panel on the one path that draws
+    it. `tests/test_card.py` already pins both halves of that invariant — the drop
+    paths assert `len(figure.axes) == 1`, and the bars-mode tests index `axes[1]` for
+    payback — so position is a checked property of the layout here, not a guess.
+
+    There are three axes counts, not two, and the third is why this indexes
+    defensively rather than assuming a savings panel exists: `_draw_chart` returns
+    before adding any axes when the sweep has no scenarios to plot or the card has
+    no room for a chart, so `baseline_only` renders a figure with *zero* axes. That
+    card's savings panel is as dropped as its payback panel.
+
+    An absent panel is reported as `DROPPED`, never as an empty list and never as a
+    count of zero — a real panel drawn with no labelled gridlines is a different
+    thing from a panel the layout never created, and collapsing the two is the
+    defect this function was rewritten to remove.
+
+    Rebuilds the figure rather than reading it back off the PNG. The numbers wanted
+    are the locator's decisions, and the axis objects state them directly; recovering
+    them from pixels would mean re-deriving them from rendered hairlines.
     """
     figure = build_summary_card(result, tariff=tariff)
     figure.canvas.draw()
-    for axes in figure.axes:
-        if axes.get_ylabel() != "EUR / year":
+    return {
+        panel: drawn_ticks(figure.axes[index]) if len(figure.axes) > index else DROPPED
+        for index, panel in enumerate(("savings", "payback"))
+    }
+
+
+def opsd_cases(source: Path) -> tuple[list[tuple[str, AnalysisResult, Tariff]], list[str]]:
+    """The launch cards, plus one message per household whose CSV is missing.
+
+    Returns the cases it could build and the notes about the ones it could not, so
+    the caller reports both together. Absence is a message naming the path, never a
+    silent short sweep: the OPSD extract is git-ignored, so for anyone but its author
+    the normal outcome is that these two are skipped, and a skip that prints nothing
+    is indistinguishable from a script that never had the feature.
+    """
+    cases: list[tuple[str, AnalysisResult, Tariff]] = []
+    notes: list[str] = []
+    for household in OPSD_HOUSEHOLDS:
+        csv = source / f"{household}.csv"
+        if not csv.exists():
+            notes.append(f"  skipped {household}: no CSV at {csv}")
             continue
-        low, high = axes.get_ylim()
-        return sum(
-            1
-            for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True)
-            if label.get_text() and low <= location <= high
-        )
-    return 0
+        df, report = load_energy_data(csv, OPSD_MAPPING, timezone=OPSD_TIMEZONE)
+        cases.append((household, analyze(df, report, [0, 5, 10, 15], 600.0, TARIFF), TARIFF))
+    return cases, notes
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--opsd-input",
+        type=Path,
+        default=OPSD_INPUT,
+        help="Directory holding the OPSD household CSVs (env: BATTERY_WORTH_OPSD_DIR)",
+    )
+    parser.add_argument(
+        "--opsd-output",
+        type=Path,
+        default=OPSD_OUTPUT,
+        help="Where the launch cards are written (env: BATTERY_WORTH_OPSD_CARDS)",
+    )
     args = parser.parse_args()
 
     if not args.fixture.exists():
@@ -241,21 +347,55 @@ def main() -> int:
             ("baseline_only", analyze(df, report, [0], 600.0, TARIFF), TARIFF),
         ]
 
-        written: list[tuple[Path, int]] = []
-        for name, result, tariff in cases:
-            path = output / f"{name}.png"
-            render_summary_card(result, path, tariff=tariff)
-            written.append((path, savings_tick_count(result, tariff)))
+        launch, skipped = opsd_cases(args.opsd_input.resolve())
 
-    print(f"\n{len(written)} cards written to {output}\n")
-    # The gridline count is printed beside each path because it is a property the
-    # eye reads instantly and nobody thinks to measure. It doubled across this whole
-    # set once — a locator fix for a mislabelled axis, correct in itself, quietly
-    # taking every healthy panel from four gridlines to ten — and the change was
-    # invisible in a list of filenames. Reporting it makes the next one a number
-    # that moved rather than something noticed later, if at all.
-    for path, ticks in written:
-        print(f"  {ticks:>2} gridlines   {path}")
+        # (kind, name, destination directory, result, tariff). The kind travels with
+        # the row because the two sets are read for different reasons: a coverage row
+        # answers "does this branch still draw something sane", a launch row answers
+        # "is the picture a stranger sees current with HEAD". Mixing them unlabelled
+        # in one table invites reading a launch regression as a coverage case.
+        launch_output = args.opsd_output.resolve()
+        if launch:
+            launch_output.mkdir(parents=True, exist_ok=True)
+        rows: list[tuple[str, str, Path, AnalysisResult, Tariff]] = [
+            ("coverage", name, output, result, tariff) for name, result, tariff in cases
+        ]
+        rows += [("launch", name, launch_output, result, tariff) for name, result, tariff in launch]
+
+        written: list[tuple[str, str, Path, dict[str, list[float] | str]]] = []
+        for kind, name, destination, result, tariff in rows:
+            path = destination / f"{name}.png"
+            render_summary_card(result, path, tariff=tariff)
+            written.append((kind, name, path, panel_ticks(result, tariff)))
+
+    print(f"\n{len(cases)} coverage cards written to {output}")
+    if launch:
+        print(f"{len(launch)} launch cards written to {launch_output}")
+    if skipped:
+        print("\nOPSD launch cards not rendered (the coverage cards are unaffected):")
+        for note in skipped:
+            print(note)
+
+    # Both panels are printed, with their tick *values* and not merely a count. The
+    # count alone doubled across this whole set once — a locator fix for a mislabelled
+    # axis, correct in itself, quietly taking every healthy panel from four gridlines
+    # to ten — and the change was invisible in a list of filenames. The values catch
+    # the other half of that: a panel can keep its count and move its scale, which
+    # reads as a different chart and shows up nowhere in a number.
+    print()
+    for kind, name, _path, panels in written:
+        for panel in ("savings", "payback"):
+            ticks = panels[panel]
+            state = (
+                ticks
+                if isinstance(ticks, str)
+                else f"{len(ticks):>2} | [{', '.join(f'{t:g}' for t in ticks)}]"
+            )
+            print(f"  {kind:<8} | {name:<28} | {panel:<7} | {state}")
+
+    print()
+    for _kind, _name, path, _panels in written:
+        print(f"  {path}")
     return 0
 
 
