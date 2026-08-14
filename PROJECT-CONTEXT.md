@@ -167,7 +167,8 @@ precisely so the test suite is type-checked rather than silently degraded to `An
   - [x] `scripts/ha_export.py` — standalone Home Assistant export (see the section
     below; the HA "parser" is a separate script, not an ingest path)
   - [ ] README with real card screenshot
-  - [ ] Dockerfile (multi-stage), launch posts
+  - [x] Dockerfile (multi-stage) — `bfb5197`
+  - [ ] launch posts
   - ~~optional LLM layer~~ — **deferred to v0.2**, not a v0.1 item
     (decision and rationale in "Locked decisions")
   - ~~cumulative counter-spike detection~~ — **deferred to v0.2**, but the defect
@@ -197,7 +198,7 @@ liability decision in "Locked decisions" — the disclaimer's protection is the 
 not making unverified claims, so a known silent defect cannot live only in the
 roadmap.
 
-**Milestone 2 is closed.** Suite: 328 tests passing, all four gates clean
+**Milestone 2 is closed.** Suite: 356 tests passing, all four gates clean
 (see "Definition of done").
 
 ## Validated invariants
@@ -528,6 +529,42 @@ Rules that follow, and that a reviewer should enforce:
   card's layout defects are the class of bug the suite structurally cannot catch:
   clipped headlines, colliding labels, bars that read as equal. Looking has to be one
   command, or it silently stops happening.
+
+## README (decided, with rationale)
+
+Constraints fixed before the README exists, gathered here because they were
+scattered across session log entries and an untracked handoff document — and
+whoever writes the README will read neither.
+
+- **solar-report's README is the house style.** The two projects cross-promote
+  and must read as written by the same hand. Only Configuration differs: YAML +
+  pydantic there, CLI flags here.
+- **A `## Disclaimer` section**, in prose: retrospective estimate, not financial
+  or energy advice; results depend entirely on the quality of the user's data;
+  the model ignores degradation, price inflation, incentives and installation
+  costs; verify with a professional before any purchase. "Limits & assumptions"
+  is the technical half of the same statement and stays where it is.
+- **A `## Why not battery_sim?` section** — retrospective/instant against
+  forward/live. It will be the first question on r/homeassistant. Requires
+  external research on what battery_sim does today.
+- **The card screenshot uses a flat tariff, not the Italian bands.** The footer
+  names the tariff scheme but never the timezone, so "Italian bands" on foreign
+  data suggests a frame the run may not have had.
+- **Same reason, stated rather than avoided: the README must say the example
+  data is from Konstanz, southern Germany, in `Europe/Berlin`** (OPSD households
+  residential4 and residential6). The footer cannot carry it and is not being
+  changed.
+- **OPSD attribution is required** (CC BY 4.0), in the README as well as beside
+  the images in `docs/assets/README.md`.
+- **Docker**: the terminal prints *container* paths, so the README must state the
+  volume mapping and show `--user $(id -u):$(id -g)`, without which the user gets
+  root-owned files.
+- **Image size, honest line**: multi-stage buys no pip and no compiler in the
+  runtime, not megabytes — 419 MB in both stages, because the scientific wheels
+  are 289 MB of it.
+- **No `pip install battery-worth`**: it is not on PyPI. Source only.
+- **Limit to declare**: self-consumption can be distorted by corrupt meter
+  readings, and v0.1 does not detect them.
 
 ## DST handling (decided, with rationale)
 
