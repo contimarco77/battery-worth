@@ -216,6 +216,25 @@ _EDGE_MARGIN = 0.04
 _LABEL_GAP_PT = 7.0
 _LABEL_CLEARANCE_PT = 4.0
 
+# The most gridlines a savings panel may draw. A cap, not a target: the locator
+# still picks the step, and still picks an integer one.
+#
+# It exists because `integer=True` has a side effect on the panels that were
+# already correct. Constraining the *step* to a whole number removes the locator's
+# preferred candidates on most ranges, so it falls to a finer admissible one — and
+# the tick count roughly doubled across the sample set (60_days 4 -> 10, ausgrid
+# 6 -> 9, residential6 6 -> 10). The labels became honest and the panel became
+# noise, which is a bad trade on a card that gets three seconds: gridlines compete
+# with the bars, and ten of them read as texture where four read as a scale.
+#
+# Four is chosen from the rendered set, not from taste. At this cap every sample
+# panel lands on 3-4 gridlines with a round step — 0/150/300/450 on the fixture,
+# 0/15/30/45 on residential6, 0/6/12/18 on the thin-spread card — while 5 and 6
+# put most panels back at 5-6 lines, i.e. most of the way back to the density
+# being fixed. It is `nbins`, so it binds only the upper end: a panel whose data
+# wants fewer still draws fewer.
+_MAX_SAVINGS_TICKS = 4
+
 _BRAND = PROJECT_NAME
 _REPO_URL = REPO_DISPLAY_URL
 
@@ -1123,8 +1142,16 @@ def _format_money_ticks(axes: Axes) -> None:
     leave the same latent disagreement for whatever range next produced a fractional
     step, which is exactly how this one survived — every earlier card had savings in
     the hundreds, where the chosen step happened to be integral.
+
+    **`nbins` is here because the fix above had a cost on the panels that were
+    already right.** Removing the fractional candidates leaves the locator choosing a
+    finer integral step, and the gridline count roughly doubled across the sample set
+    — the correct fix for the edge case, paid for by the normal path. The label
+    honesty is the property worth having and it is unaffected: capping how many ticks
+    may be drawn does not let any of them sit anywhere other than where it is
+    labelled. See `_MAX_SAVINGS_TICKS` for why the cap is the number it is.
     """
-    axes.yaxis.set_major_locator(MaxNLocator(integer=True))
+    axes.yaxis.set_major_locator(MaxNLocator(nbins=_MAX_SAVINGS_TICKS, integer=True))
     axes.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
 
 

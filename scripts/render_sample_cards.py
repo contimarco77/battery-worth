@@ -59,7 +59,7 @@ from pathlib import Path
 import pandas as pd
 
 from battery_worth.analysis import run_analysis
-from battery_worth.card import render_summary_card
+from battery_worth.card import build_summary_card, render_summary_card
 from battery_worth.ingest import load_energy_data
 from battery_worth.models import (
     AnalysisResult,
@@ -133,6 +133,30 @@ def analyze(
         tariff=tariff,
         battery_cost_per_kwh=cost_per_kwh,
     )
+
+
+def savings_tick_count(result: AnalysisResult, tariff: Tariff) -> int:
+    """Gridlines actually drawn on the card's savings panel.
+
+    Counts the ticks *inside* the y-limits, which is what the reader sees: the
+    locator can place one past the axis end, and that one is never drawn.
+
+    Rebuilds the figure rather than reading it back off the PNG. The number wanted
+    is the locator's decision, and the axis object states it directly; recovering it
+    from pixels would mean re-deriving it from rendered hairlines.
+    """
+    figure = build_summary_card(result, tariff=tariff)
+    figure.canvas.draw()
+    for axes in figure.axes:
+        if axes.get_ylabel() != "EUR / year":
+            continue
+        low, high = axes.get_ylim()
+        return sum(
+            1
+            for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True)
+            if label.get_text() and low <= location <= high
+        )
+    return 0
 
 
 def main() -> int:
@@ -217,15 +241,21 @@ def main() -> int:
             ("baseline_only", analyze(df, report, [0], 600.0, TARIFF), TARIFF),
         ]
 
-        written: list[Path] = []
+        written: list[tuple[Path, int]] = []
         for name, result, tariff in cases:
             path = output / f"{name}.png"
             render_summary_card(result, path, tariff=tariff)
-            written.append(path)
+            written.append((path, savings_tick_count(result, tariff)))
 
     print(f"\n{len(written)} cards written to {output}\n")
-    for path in written:
-        print(f"  {path}")
+    # The gridline count is printed beside each path because it is a property the
+    # eye reads instantly and nobody thinks to measure. It doubled across this whole
+    # set once — a locator fix for a mislabelled axis, correct in itself, quietly
+    # taking every healthy panel from four gridlines to ten — and the change was
+    # invisible in a list of filenames. Reporting it makes the next one a number
+    # that moved rather than something noticed later, if at all.
+    for path, ticks in written:
+        print(f"  {ticks:>2} gridlines   {path}")
     return 0
 
 

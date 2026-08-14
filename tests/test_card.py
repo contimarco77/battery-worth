@@ -45,6 +45,9 @@ from battery_worth.card import (
 # card no longer uses. Private because nothing outside the renderer sets layout; the
 # test asserts on the renderer's own contract, which is the one case for reaching in.
 from battery_worth.card import (
+    _MAX_SAVINGS_TICKS as CARD_MAX_SAVINGS_TICKS,
+)
+from battery_worth.card import (
     CARD_PX,
     build_summary_card,
     headline_for,
@@ -797,8 +800,47 @@ def headline_of(figure: Figure) -> Text:
     return max(candidates, key=lambda t: t.get_position()[1])
 
 
-def test_no_text_is_drawn_wider_than_the_card() -> None:
-    """No figure-level text may extend past the drawable width, on any sample case.
+# The clearance every drawn string must leave between its own edge and the drawable
+# boundary. Picked from the measured distribution, not from a round number: on the
+# current sample set the tightest card (`beyond_lifetime_thin_spread`) clears by
+# ~5px, `baseline_only` by ~11px, and everything else by 28-42px. So the choice is
+# between the two failure modes on either side of that 5px.
+#
+# A bare "does not exceed the boundary" — the previous assertion — passes at 0.1px
+# of clearance, which is a headline touching the edge it is supposed to stay inside.
+# Setting the floor at the tightest card's own 5px is the opposite failure: the test
+# then passes by a hair and the next wording change breaks it for being 1px wider,
+# which trains the reader to raise the number rather than to look at the card.
+#
+# 4px sits just under the tightest real card. It is above the ±1px of rounding the
+# renderer's own extent measurement carries, so it cannot flap; and it is far enough
+# below 5px that the thin-spread headline is not sitting on the threshold. What it
+# catches is the case worth catching: a string that consumes the remaining gap
+# entirely, which is the shape every clipping defect on this card has had.
+_MIN_TEXT_CLEARANCE_PX = 4.0
+
+# The fewest gridlines a savings panel can draw and still be a scale. Two is the
+# locator's own floor — it returns the endpoints even when asked for one bin — and
+# an axis of nothing but its endpoints brackets the data rather than measuring it.
+# Three is the first count with a gridline *between* them, which is the one a reader
+# steps a bar against.
+_MIN_SAVINGS_TICKS = 3
+
+
+def test_no_text_is_drawn_within_a_few_pixels_of_the_drawable_edge() -> None:
+    """Every drawn string must clear the *drawable* boundary, not merely the card.
+
+    **The boundary is x=90..1110, not 0..1200.** The card is 1200px wide but the
+    text margin insets it by `_MARGIN` on each side, and that inset edge is the one
+    a headline is laid out against — `_fit_headline` shrinks and wraps to
+    `_WIDTH * CARD_PX`, so a string that reached the card edge would already be
+    ~90px past the layout's own limit. Asserting against 1200 would give the
+    tightest card 99px of imaginary room and protect nothing.
+
+    **And clearance is asserted explicitly**, rather than "does not exceed". A
+    boundary test with no margin passes at a fraction of a pixel of daylight, which
+    on this card is indistinguishable from the clipping it exists to prevent. See
+    `_MIN_TEXT_CLEARANCE_PX` for how the figure was chosen.
 
     **The defect this exists to catch shipped.** `beyond_lifetime_thin_spread` drew
     "No size pays back before the battery wears out" to x=1199 on a 1200px card — the
@@ -819,7 +861,9 @@ def test_no_text_is_drawn_wider_than_the_card() -> None:
     the only thing holding it on the card. Checking one artist licenses the identical
     defect in every other — so the invariant is stated over all of them.
     """
-    limit = (1.0 - 2 * CARD_MARGIN) * CARD_PX
+    left_edge = CARD_MARGIN * CARD_PX
+    right_edge = CARD_PX - CARD_MARGIN * CARD_PX
+
     faults: list[str] = []
     for name, figure in sample_cards().items():
         figure.canvas.draw()
@@ -830,16 +874,28 @@ def test_no_text_is_drawn_wider_than_the_card() -> None:
             if not text.get_text():
                 continue
             extent = text.get_window_extent(renderer=renderer)
-            # Right-aligned text (the footer's repo URL) is anchored at the right
-            # margin, so both edges are checked rather than the width alone.
-            if (
-                extent.x0 < CARD_MARGIN * CARD_PX - 1
-                or extent.x1 > CARD_PX - (CARD_MARGIN * CARD_PX) + 1
-            ):
+            # The clearance rule applies to the edge the string is free to grow
+            # toward, which is the one its length can push past. A left-aligned
+            # string grows rightward; the footer's right-aligned URL grows leftward.
+            # Its anchored edge sits *on* the margin by construction, so demanding
+            # clearance there would fail the layout for being correct — that edge is
+            # checked for alignment instead, within the renderer's rounding.
+            if text.get_horizontalalignment() == "right":
+                free, anchored = right_edge - extent.x0, extent.x1 - right_edge
+            else:
+                free, anchored = extent.x1 - left_edge, left_edge - extent.x0
+            clearance = (1.0 - 2 * CARD_MARGIN) * CARD_PX - free
+            if clearance < _MIN_TEXT_CLEARANCE_PX:
                 faults.append(
                     f"{name}: {text.get_text()[:50]!r} spans "
-                    f"x={extent.x0:.1f}..{extent.x1:.1f} outside the "
-                    f"{limit:.1f}px drawable width"
+                    f"x={extent.x0:.1f}..{extent.x1:.1f} and clears the drawable "
+                    f"edge by only {clearance:.1f}px "
+                    f"(minimum {_MIN_TEXT_CLEARANCE_PX:.1f}px)"
+                )
+            if anchored > 1:
+                faults.append(
+                    f"{name}: {text.get_text()[:50]!r} starts at x={extent.x0:.1f}, "
+                    f"outside the x={left_edge:.0f}..{right_edge:.0f} drawable area"
                 )
     assert faults == []
 
@@ -893,6 +949,88 @@ def test_every_savings_tick_label_names_the_value_it_sits_at() -> None:
     assert faults == []
 
 
+def test_the_savings_axis_stays_a_scale_rather_than_becoming_texture() -> None:
+    """A savings panel may not draw more gridlines than the card can afford.
+
+    **This is the other half of the tick-label fix, and it exists because the fix
+    had a cost that went unmeasured.** Constraining tick *locations* to integers made
+    the labels honest, and as a side effect took the locator off its preferred steps
+    onto finer admissible ones: the gridline count roughly doubled across the sample
+    set — 60_days 4 to 10, ausgrid 6 to 9, residential6 6 to 10 — on panels that had
+    nothing wrong with them. The edge case was repaired on the normal path's budget.
+
+    Density is a correctness property here, not a preference, which is why it is
+    pinned rather than left to the eye. The card gets about three seconds and every
+    element competes with the verdict; gridlines compete directly with the bars,
+    which are the argument. Ten of them read as texture behind the data where four
+    read as a scale against it.
+
+    Asserted over the whole sample set for the same reason the label test is: the
+    count is a function of the data range, so the range that next drives it up is the
+    one nobody has looked at.
+
+    **The lower bound is the half that keeps the cap honest.** An upper bound alone
+    is satisfied by tightening the cap arbitrarily far, and the axis degrades long
+    before the count reaches zero: at `nbins=1` the locator still returns two ticks,
+    but they are the endpoints — the 60-day panel reads 0 and 1,000 for bars in the
+    low hundreds, an axis that brackets the data instead of measuring it. Three is
+    the smallest count with an interior gridline, which is what a reader steps a bar
+    against, so that is where the floor goes.
+    """
+    faults: list[str] = []
+    for name, figure in sample_cards().items():
+        figure.canvas.draw()
+        for axes in figure.axes:
+            if axes.get_ylabel() != "EUR / year":
+                continue
+            low, high = axes.get_ylim()
+            drawn = [
+                location
+                for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True)
+                if label.get_text() and low <= location <= high
+            ]
+            if len(drawn) > CARD_MAX_SAVINGS_TICKS:
+                faults.append(
+                    f"{name}: savings panel draws {len(drawn)} gridlines "
+                    f"({', '.join(f'{t:g}' for t in drawn)}), "
+                    f"more than the {CARD_MAX_SAVINGS_TICKS} the card affords"
+                )
+            if len(drawn) < _MIN_SAVINGS_TICKS:
+                faults.append(
+                    f"{name}: savings panel draws {len(drawn)} gridlines "
+                    f"({', '.join(f'{t:g}' for t in drawn)}) — fewer than the "
+                    f"{_MIN_SAVINGS_TICKS} it takes to have an interior one"
+                )
+    assert faults == []
+
+
+def test_a_negative_savings_panel_still_draws_zero_as_a_gridline() -> None:
+    """Zero survives the tick cap, because zero is the meaning of that chart.
+
+    On the losing card the whole finding is *which side of zero the bars are on*, so
+    the crossing point has to be a labelled gridline and not an inference from the
+    two ticks either side of it. Capping the tick count is exactly the kind of change
+    that could take it away — fewer ticks over a range running from -1,254 to 0 could
+    land on -1,300/-650 and skip the one value that matters.
+
+    Checked as its own property rather than folded into the density test: that one
+    would pass on an axis of four evenly spaced gridlines none of which is zero.
+    """
+    figure = build_summary_card(build(tariff=LOSING_TARIFF), tariff=LOSING_TARIFF)
+    figure.canvas.draw()
+
+    panels = [axes for axes in figure.axes if axes.get_ylabel() == "EUR / year"]
+    assert panels, "the losing card still draws a savings panel"
+    for axes in panels:
+        low, high = axes.get_ylim()
+        drawn = [
+            location
+            for location, label in zip(axes.get_yticks(), axes.get_yticklabels(), strict=True)
+            if label.get_text() and low <= location <= high
+        ]
+        assert 0.0 in drawn, f"zero must be a drawn gridline, got {drawn}"
+
+
 @pytest.mark.parametrize(
     ("capacities", "cost", "days", "tariff"),
     [
@@ -923,6 +1061,31 @@ def test_no_bar_or_label_is_drawn_outside_its_panel(
     assert axis_overruns(figure) == []
 
 
+def _bar_just_above_a_gridline() -> tuple[float, Figure]:
+    """A 60-day card whose tallest bar sits barely above a gridline, and that bar.
+
+    Sweeps candidate maxima and keeps the first whose tallest bar clears its own
+    gridline by under 5% of its height — the geometry that leaves a bar label the
+    least room, and the one that actually broke the card. Which value produces it is
+    a function of whatever step the locator currently chooses, so it is discovered
+    per run rather than written down; that is the whole point of searching.
+
+    Raises if no candidate reproduces the shape, because a test that silently falls
+    back to an easy fixture is worse than one that fails: it reports the awkward case
+    as passing while no longer containing it.
+    """
+    for top in range(60, 400):
+        result = pinned_savings(
+            build(days=60), {5.0: top * 0.65, 10.0: top * 0.94, 15.0: float(top)}
+        )
+        figure = build_summary_card(result, tariff=FLAT_TARIFF)
+        tallest = max(bar.get_height() for bar in bars_of(figure.axes[0]))
+        below = [t for t in figure.axes[0].get_yticks() if t <= tallest]
+        if below and 0 < tallest - max(below) < 0.05 * tallest:
+            return tallest, figure
+    raise AssertionError("no candidate maximum reproduced a bar just above a gridline")
+
+
 def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
     """A bar just above a gridline — the geometry that actually broke the card.
 
@@ -941,21 +1104,17 @@ def test_a_maximum_just_above_a_round_tick_still_fits_its_label() -> None:
     height, and it is the shorter panel that turns those few pixels negative — so
     this fixture carries the 60-day period as well as the awkward maximum.
     """
-    # The values are chosen so the tallest bar lands just *above* a gridline the
-    # locator actually places — 202 against a 200 tick. The original pinning was
-    # 303 against 300, which stopped being the awkward case when the savings axis
-    # moved to an integer locator: that locator steps this range by 40, so 303 sat
-    # a comfortable 23 EUR above its 280 tick and the geometry under test was gone.
-    # The assertions below re-derive the tick from the axis rather than trusting
-    # either number, so the fixture cannot silently stop reproducing the case again.
-    result = pinned_savings(build(days=60), {5.0: 132.0, 10.0: 191.0, 15.0: 202.0})
-
-    figure = build_summary_card(result, tariff=FLAT_TARIFF)
+    # **The awkward maximum is searched for, not hardcoded.** It has been pinned to a
+    # literal twice and invalidated twice by changes to the locator — 303 against a
+    # 300 tick, which the integer locator stepped past at 280; then 202 against 200,
+    # which the tick cap stepped past at 160. Each time the constant survived, the
+    # geometry it was chosen to produce quietly did not, and the test went on passing
+    # against a bar sitting comfortably mid-span. A fixture that names the *shape* it
+    # needs and finds a value producing it cannot be invalidated that way: when the
+    # locator moves, the search moves with it.
+    tallest, figure = _bar_just_above_a_gridline()
     savings_axes = figure.axes[0]
 
-    # The fixture has to actually be the awkward case, or the test is vacuous.
-    tallest = max(bar.get_height() for bar in bars_of(savings_axes))
-    assert tallest == pytest.approx(202.0)
     ticks = [t for t in savings_axes.get_yticks() if t <= tallest]
     # Just above, and only just: the bar must clear its gridline by a small
     # fraction of the span, which is what leaves the label the least room.
