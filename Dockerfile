@@ -56,7 +56,7 @@ FROM python:3.11-slim-bookworm AS runtime
 # third unpinned copy is exactly the drift that test exists to prevent.
 LABEL org.opencontainers.image.source="https://github.com/contimarco77/battery-worth"
 LABEL org.opencontainers.image.description="Would a home battery have paid off for YOU? Retrospective what-if analysis from your real energy data."
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PATH="/opt/venv/bin:$PATH" \
     # Container stdout is always a pipe, which makes it block-buffered while
