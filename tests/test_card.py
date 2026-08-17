@@ -19,8 +19,10 @@ it is the same content the reader sees, and it does not break when a margin move
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -34,7 +36,11 @@ from matplotlib.transforms import Bbox
 from PIL import Image
 
 from battery_worth import PROJECT_NAME, REPO_DISPLAY_URL, REPO_URL
+from battery_worth import card as card_module
 from battery_worth.analysis import run_analysis
+from battery_worth.card import (
+    _BAND_GAP as CARD_BAND_GAP,
+)
 from battery_worth.card import (
     _MARGIN as CARD_MARGIN,
 )
@@ -55,6 +61,7 @@ from battery_worth.card import (
     render_summary_card,
 )
 from battery_worth.models import (
+    BATTERY_LIFETIME_YEARS,
     HIGH_SELF_CONSUMPTION,
     AnalysisResult,
     Tariff,
@@ -410,10 +417,102 @@ def test_the_stat_row_does_not_call_a_dead_payback_a_payback() -> None:
     figure = build_summary_card(beyond_lifetime(pv_peak=1.2), tariff=FLAT_TARIFF)
     text = card_text(figure)
 
-    assert "never pays back" in text
-    assert "to pay back" not in text.replace("Years to pay back", "").replace(
-        "never pays back", ""
-    ), "the panel heading and the negative label are the only 'pay back' phrases left"
+    assert "to pay back" not in text.replace("Years to pay back", ""), (
+        "the panel heading is the only 'to pay back' phrase left"
+    )
+
+
+def test_the_stat_caption_claims_no_more_than_the_engine_computed() -> None:
+    """The caption may deny the horizon; it may not deny that a payback exists.
+
+    The label read "never pays back" above a stat reading "76.5 years" — the engine
+    computed a finite figure and the caption asserted an infinite one. "Never" is
+    not a rounding of 76.5, it is a different claim, and it is the one claim on the
+    card the reader cannot check against the number printed directly above it.
+
+    Asserted as a shape rather than as the replacement string, because pinning the
+    new wording would pass just as happily on the next caption that overstates the
+    arithmetic. What must hold: the caption is bounded by the *horizon*, and the
+    finite figure the engine produced is still on the card beside it.
+    """
+    result = beyond_lifetime(pv_peak=1.2)
+    text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+
+    shortest = min(
+        p for s in result.scenarios if (p := s.payback_years()) is not None and s.capacity_kwh > 0
+    )
+    # The engine's own figure is still shown: the caption qualifies it, not hides it.
+    assert f"{shortest:.1f} years" in text
+
+    # No unbounded claim anywhere on a card whose engine returned a finite payback.
+    assert "never" not in text.lower(), (
+        f"the shortest payback is a finite {shortest:.1f} years, "
+        "so no element may claim the battery never pays back"
+    )
+
+    # And the bound it does state is the domain's horizon, not a number typed here.
+    assert f"{BATTERY_LIFETIME_YEARS:.0f} years" in text
+
+
+def test_the_stat_caption_states_the_same_horizon_as_the_statement_band() -> None:
+    """Caption and band cannot drift: both read the horizon from one constant.
+
+    The band already said "within 20 years" while the caption said "never". Two
+    elements two centimetres apart describing one threshold in incompatible terms
+    is the defect this pair guards against — so the test moves the constant and
+    requires both to follow. Hard-coding 20 in the caption passes today's card and
+    fails here the moment the domain's horizon changes.
+    """
+    result = beyond_lifetime(pv_peak=1.2)
+
+    with patch.object(card_module, "_BATTERY_LIFETIME_YEARS", 30.0):
+        text = card_text(build_summary_card(result, tariff=FLAT_TARIFF))
+
+    horizons = {int(match) for match in re.findall(r"within (\d+) years", text)}
+    assert horizons == {30}, (
+        f"every element naming the horizon must read the constant, got {horizons}"
+    )
+
+
+def test_the_statement_heading_clears_the_panel_above_it() -> None:
+    """The dropped-panel path put two labels 1.5px apart on a card with 120px spare.
+
+    "Usable battery capacity" is drawn *below* the savings panel's axes box, and the
+    statement heading was placed by subtracting `_PANEL_TITLE_SPACE` — the room a
+    heading needs *above* a box, a different quantity that happened to land within
+    1.5px of the furniture's depth. The two labels touched while the band below them
+    went unused.
+
+    This is a layout defect, so passing here is not evidence the card looks right —
+    that is settled by looking at it. What the assertion is worth is the direction:
+    it fails if the heading is ever again placed by a constant that does not measure
+    what it has to clear. Asserted against the card's own inter-band spacing rather
+    than a pixel count chosen to match today's render.
+    """
+    figure = build_summary_card(beyond_lifetime(pv_peak=1.2), tariff=FLAT_TARIFF)
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+    height = figure.bbox.height
+
+    panels = [ax for ax in figure.axes if ax.get_xlabel() == "Usable battery capacity"]
+    assert len(panels) == 1, "the dropped-panel path labels exactly one shared x-axis"
+    furniture_bottom = min(
+        label.get_window_extent(renderer=renderer).y0
+        for label in [*panels[0].get_xticklabels(), panels[0].xaxis.get_label()]
+        if label.get_text()
+    )
+
+    headings = [t for t in figure.texts if t.get_text() == "Years to pay back"]
+    assert len(headings) == 1, "the statement band draws exactly one heading"
+    heading_top = headings[0].get_window_extent(renderer=renderer).y1
+
+    gap = (furniture_bottom - heading_top) / height
+    assert gap >= CARD_BAND_GAP * 0.9, (
+        f"the heading clears the x-axis furniture by {gap:.4f} of the card, "
+        f"less than the {CARD_BAND_GAP} gap used between every other band"
+    )
 
 
 def test_card_and_report_agree_on_whether_a_run_pays_back() -> None:

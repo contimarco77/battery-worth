@@ -770,11 +770,21 @@ def _draw_stats(
         # Kept inside its column. The stat labels sit on a 0.30 fixed grid, so a
         # label long enough to spell the reasoning runs straight through the next
         # column's — which is how the first attempt at this rendered, printing
-        # "past the battery's 20-year life" over "battery cost". The short form
-        # carries the whole claim: "never pays back" is the verdict, and the
-        # sentence below the savings panel supplies the horizon it is measured
-        # against.
-        payback_label = "to pay back" if best.pays_back_within_lifetime() else "never pays back"
+        # "past the battery's 20-year life" over "battery cost".
+        #
+        # "not within N years", not "never". The engine computed 76.5 years; "never"
+        # is a stronger claim than the arithmetic supports, and it is the one claim
+        # on this card that the reader cannot check against a number printed beside
+        # it — the figure above the label says 76.5. The horizon comes from the
+        # domain constant rather than the word, so this label and the sentence below
+        # the savings panel state the same threshold and cannot drift apart: both
+        # now read 20 because both ask `BATTERY_LIFETIME_YEARS`, and moving it moves
+        # them together.
+        payback_label = (
+            "to pay back"
+            if best.pays_back_within_lifetime()
+            else f"not within {_BATTERY_LIFETIME_YEARS:.0f} years"
+        )
         stats.append((_payback_label(payback), payback_label))
         stats.append((f"{best.battery_cost_eur:,.0f} EUR", "battery cost"))
 
@@ -937,7 +947,18 @@ def _draw_chart(  # noqa: PLR0914 - a two-panel layout genuinely needs its coord
     if statement is not None:
         # Below the panel's own x-axis labels and title, inside the band reserved
         # for it above the footer rule.
-        _draw_no_payback_statement(figure, statement, band_top=panel_bottom - _PANEL_TITLE_SPACE)
+        #
+        # The offset is *measured*, not assumed. It was `_PANEL_TITLE_SPACE`, which
+        # is the room a panel's heading needs *above* its axes box — a different
+        # quantity from the depth the tick labels and the axis title hang *below*
+        # it. The two happened to be within 1.5px of each other, so the heading was
+        # placed almost exactly where the x-axis title ends: on residential6
+        # "Usable battery capacity" and "Years to pay back" sat 1.5px apart while
+        # 120px of surface went unused above the footer. A constant that has to
+        # match rendered text is a coincidence waiting to be broken by a font or a
+        # font size, which is why the panel's real furniture is asked for instead.
+        furniture = _x_axis_furniture_depth(savings_axes)
+        _draw_no_payback_statement(figure, statement, band_top=panel_bottom - furniture - _BAND_GAP)
 
 
 def _emphasized_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult | None:
@@ -976,6 +997,41 @@ def no_payback_statement(scenarios: list[ScenarioResult]) -> str | None:
         f"No capacity pays back within {_BATTERY_LIFETIME_YEARS:.0f} years — "
         f"shortest is {payback:.1f} y at {_capacity_label(scenario.capacity_kwh)}"
     )
+
+
+def _x_axis_furniture_depth(axes: Axes) -> float:
+    """How far below its axes box a panel's x tick labels and axis title reach.
+
+    In figure fractions, so the caller can place the next band directly against it.
+    Measured from the rendered artists rather than derived from font sizes and
+    label pads, for the same reason `_label_headroom_px` measures its labels: the
+    depth is a text quantity, and every arithmetic reconstruction of it is a second
+    copy of matplotlib's layout rules that silently stops matching.
+
+    Falls back to the axes box itself when the panel draws no x furniture, which
+    keeps the caller's arithmetic total — a panel with its labels suppressed has
+    zero depth, not an undefined one.
+    """
+    figure = axes.get_figure()
+    assert figure is not None  # an axes added via `add_axes` always has one
+    canvas = figure.canvas
+    assert isinstance(canvas, FigureCanvasAgg)  # attached in `_build`
+    # The extents are only meaningful once the artists have been laid out: tick
+    # labels do not exist as positioned artists until the panel has been drawn.
+    # matplotlib ships no stubs, so both of these are untyped to mypy strict.
+    canvas.draw()  # type: ignore[no-untyped-call]
+    renderer = canvas.get_renderer()  # type: ignore[no-untyped-call]
+
+    box_bottom_px = axes.get_window_extent().y0
+    bottoms = [
+        label.get_window_extent(renderer=renderer).y0
+        for label in [*axes.get_xticklabels(), axes.xaxis.get_label()]
+        if label.get_text()
+    ]
+    if not bottoms:
+        return 0.0
+    depth_px = box_bottom_px - min(bottoms)
+    return max(0.0, float(depth_px) / float(figure.bbox.height))
 
 
 def _draw_no_payback_statement(figure: Figure, statement: str, band_top: float) -> None:
