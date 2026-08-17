@@ -174,7 +174,7 @@ precisely so the test suite is type-checked rather than silently degraded to `An
 - [ ] **Milestone 3 in progress**:
   - [x] `scripts/ha_export.py` — standalone Home Assistant export (see the section
     below; the HA "parser" is a separate script, not an ingest path)
-  - [ ] README with real card screenshot
+  - [x] README with real card screenshot
   - [x] Dockerfile (multi-stage) — `bfb5197`
   - [ ] launch posts
   - ~~optional LLM layer~~ — **deferred to v0.2**, not a v0.1 item
@@ -206,7 +206,7 @@ liability decision in "Locked decisions" — the disclaimer's protection is the 
 not making unverified claims, so a known silent defect cannot live only in the
 roadmap.
 
-**Milestone 2 is closed.** Suite: 358 tests passing, all four gates clean
+**Milestone 2 is closed.** Suite: 363 tests passing, all four gates clean
 (see "Definition of done").
 
 ## Validated invariants
@@ -1395,3 +1395,90 @@ Ausgrid "Solar home electricity data", customer 1, 2012-07-01 → 2013-06-30
 
   **Next: the README.** It is the last block before launch and its constraints
   are now in one section.
+- **2026-08-17** — **The README's dangerous claims were the ones written with
+  confidence.** Commits: the caption and heading fix on the dropped-panel path,
+  the marked column in the sensitivity table, the Docker licence label, the
+  README itself, the folded battery_sim comparison, and the dropped legal
+  review. Suite 358 → 363, all four gates clean.
+
+  *The stub README asserted three things that were false and one that was
+  stale.* It claimed 321 tests, declared the Docker image not built when
+  `bfb5197` had built it, and described the `--llm` layer as not done when it is
+  deferred by decision — two different statements to a reader deciding whether
+  the project is alive. It was replaced wholesale, in `solar-report`'s house
+  style, and the Home Assistant export section was carried over unchanged
+  because it was already right.
+
+  *Six substantive mismatches, found by auditing the draft against the code
+  read-only.* `--battery-cost` does not exist — the flag is
+  `--battery-cost-per-kwh` and it is a rate per usable kWh, not a total, so the
+  Quick start failed outright and would have computed a payback an order of
+  magnitude wrong if it had not. `--capacity` does not exist either; it is
+  `--capacities`, comma-separated, default `0,5,10,15`. "This writes a Markdown
+  report and a PNG summary card" is false without `--output`, which the table
+  omitted entirely — the single likeliest thing to make a first run look broken.
+  "289 MB of scientific wheels" paired the larger number with the narrower
+  label: 289 MB is all of site-packages, the scientific subset is about 200.
+  The round-trip efficiency default of 0.90 was unstated although it moves every
+  euro in the report, and the timezone default of `Europe/Rome` was unstated
+  although the example data is German — the Quick start as drafted analysed
+  German-style data in Rome.
+
+  **The predictive part: the claims flagged in advance as guesses were the
+  harmless ones.** The audit was requested because two flag names were known to
+  be from memory. Those two were indeed wrong, but so were four claims written
+  without hesitation — and the worst of them, `--battery-cost`, was in the
+  runnable example rather than in the reference table. *Knowing which claims you
+  guessed is not the same as knowing which ones are wrong, and the confident
+  ones are unmarked by definition.*
+
+  *"Corrupt meter readings are not detected" understated the tool.* The ingest
+  layer clips and counts negative values at native resolution, counts gaps and
+  their total hours, warns on irregular sampling and on periods under a year,
+  auto-detects cumulative meters per column, and surfaces all of it in the
+  report rather than fixing it silently. What actually gets through is the
+  narrow case: a sensor flatlined at a believable value, or a spike within a
+  believable range. **Overstating a limit is the same class of defect as
+  overstating a capability** — the README gave away work the tool does, on the
+  claim the positioning rests on.
+
+  *The audit was specified read-only, with edits forbidden even where the fix
+  was obvious.* Had it corrected as it went, the list of what had been guessed
+  would not exist and this entry would not have been writable. Same reasoning as
+  leaving changes unstaged: the diff is the artefact, not the end state.
+
+  *Two decisions reversed.* The `## Why not battery_sim?` section was a locked
+  README constraint; the drafted version read like a commercial comparison page
+  — a four-axis table and a closing recommendation, a register nothing else in
+  the project uses. Folded into the "Retrospective, not predictive" bullet
+  instead: one mention, one link, no verdict, with the forward/live distinction
+  and the same-physics parity both preserved. **The accepted cost is recorded
+  with the decision** — the question still gets asked, and the answer is no
+  longer findable by skimming headings. Separately, the legal review before
+  launch was dropped as disproportionate for a free tool that sells nothing;
+  what replaces it is a maintenance rule, since the Disclaimer section and the
+  card footer line are prose and nothing fails if a future rewrite shortens them
+  away.
+
+  *Two card defects on the dropped-panel path, both on a launch screenshot.* The
+  stat row read `never pays back` beneath a computed `76.5 years` — a correct
+  twenty-year threshold rendered into a claim the engine had not made. It now
+  reads "not within 20 years", wired to the same constant as the statement band
+  so the two cannot drift. And the heading below the savings panel sat 1.5px
+  from the axis label above it: `band_top` subtracted `_PANEL_TITLE_SPACE`, the
+  room a heading needs *above* an axes box, which nearly cancelled against the
+  56.1px the x-axis furniture hangs *below* it. **The card was not short of
+  space — 120px sat unused above the footer and the heading was placed too
+  high.** Measuring the furniture and subtracting the card's own `_BAND_GAP`
+  gives 36.0px, within 3px of the healthy card's 38.7. Three cards changed, not
+  one; the two extra are the coverage cases for the same branch, and a fix that
+  left them untouched would have meant the path was not shared.
+
+  *`Dockerfile:59` labelled the image `licenses="MIT"`* while `LICENSE`,
+  `pyproject.toml` and the README badge all say Apache-2.0 — the last of the MIT
+  residue, and the only copy that would have travelled with a published image.
+
+  **Next: the launch posts**, the only remaining pre-launch item. Worth planning
+  rather than repeating: `solar-report` ran dev.to, r/selfhosted, r/SolarDIY and
+  a PyCoder's submission with no confirmation, never published its Show HN
+  draft, and saw minimal engagement across all of them after several weeks.
