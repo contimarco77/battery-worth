@@ -60,7 +60,7 @@ inbound senior-rate consulting. No active selling.
     posts depend on — does not exist yet.
   - Shipping it in v0.2 buys a second launch post on the same channels.
 - **Liability position: Apache 2.0 unmodified, a plain-language README disclaimer,
-  one line on the card, and a lawyer before launch.** Four parts, decided together
+  and one line on the card.** Three parts, decided together
   because each covers a channel the others do not reach:
   - **The licence text is not edited.** Sections 7 and 8 (Disclaimer of Warranty,
     Limitation of Liability) are the industry-standard wording and are the
@@ -79,9 +79,17 @@ inbound senior-rate consulting. No active selling.
     the footer's existing space constraint — see the Summary card section, where
     the 2026-08-12 (3) entry records that the footer gets three seconds and every
     line competes with the verdict.
-  - **A lawyer reviews the disclaimer wording before launch.** An open external
-    dependency, not a task that can be closed by writing better text.
-
+  **No legal review before launch** — reversed on 17 August. It was listed as a
+  fourth part and as an open external dependency; retaining a lawyer for a free
+  tool that sells nothing is out of proportion to the exposure. Apache 2.0
+  sections 7 and 8 are the substantive protection and are unmodified, and the
+  two texts that carry the project-specific part are already written. What
+  replaces the review is a maintenance rule: **the Disclaimer section and the
+  card footer line are load-bearing and must survive every future edit.** They
+  are prose, so nothing fails if they are shortened away during a rewrite —
+  which is exactly how they would be lost. Revisit if the project ever takes
+  money, ships an LLM layer that phrases its own conclusions, or is redistributed
+  by someone else under their name.
   This is locked rather than a nice-to-have because it is the same claim the
   project is positioned on: the numbers are real and the limits are stated, and
   the disclaimer is that claim in plain language. What a disclaimer cannot do
