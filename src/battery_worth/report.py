@@ -160,6 +160,10 @@ def _build_environment() -> Environment:
         years=_filter_years,
         round0=_filter_round0,
     )
+    # A test rather than a filter: the template asks whether a column *is* the
+    # configured one, and `if p is configured_price(sensitivity)` is the reading
+    # that matches. Same predicate the prose branch is computed from.
+    env.tests.update(configured_price=_is_configured_price)
     return env
 
 
@@ -217,20 +221,30 @@ def _filter_round0(value: float) -> str:
     return f"{value:,.0f}"
 
 
-def _configured_price_is_a_column(
-    sensitivity: ExportPriceSensitivity | None,
-) -> bool:
-    """Does the sensitivity grid actually contain the price the analysis was costed at?
+def _is_configured_price(price: float, sensitivity: ExportPriceSensitivity) -> bool:
+    """Is this swept price the one the analysis was actually costed at?
 
     Compared on the *rendered* label rather than the float, because that is what
     the claim in the report is about: the reader is being told to find a column,
     and two prices that print identically are the same column to them. It also
     sidesteps the float equality that `round(configured * factor, 6)` invites.
+
+    The single definition of that comparison. The prose says the configured price
+    is one of the columns and the header bolds the column it means; those two
+    statements are about the same fact, so they read the same test. Two tests
+    would eventually disagree, and the failure would be a report pointing at one
+    column while emphasising another.
     """
+    return _filter_price(price) == _filter_price(sensitivity.baseline_export_price_eur_kwh)
+
+
+def _configured_price_is_a_column(
+    sensitivity: ExportPriceSensitivity | None,
+) -> bool:
+    """Does the sensitivity grid actually contain the price the analysis was costed at?"""
     if sensitivity is None:
         return False
-    configured = _filter_price(sensitivity.baseline_export_price_eur_kwh)
-    return any(_filter_price(price) == configured for price in sensitivity.export_prices)
+    return any(_is_configured_price(price, sensitivity) for price in sensitivity.export_prices)
 
 
 def _largest_scenario(scenarios: list[ScenarioResult]) -> ScenarioResult:

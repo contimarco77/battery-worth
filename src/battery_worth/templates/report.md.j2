@@ -69,7 +69,7 @@ costing changes. The same simulation is re-costed below across the sweep;
 {% if configured_price_in_sweep %}{{ sensitivity.baseline_export_price_eur_kwh | price }} EUR/kWh is one of the columns:{% else %}{{ sensitivity.baseline_export_price_eur_kwh | price }} EUR/kWh, the price used above, is not among the columns
 of this sweep:{% endif %}
 
-| Capacity |{% for p in sensitivity.export_prices %} {{ p | price }} EUR/kWh |{% endfor %}
+| Capacity |{% for p in sensitivity.export_prices %}{% if p is configured_price(sensitivity) %} **{{ p | price }} EUR/kWh** |{% else %} {{ p | price }} EUR/kWh |{% endif %}{% endfor %}
 
 |---|{% for p in sensitivity.export_prices %}---:|{% endfor %}
 

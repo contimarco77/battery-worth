@@ -341,7 +341,9 @@ def test_sensitivity_prose_does_not_claim_the_table_is_at_one_price() -> None:
     header = next(ln for ln in section.splitlines() if ln.startswith("| Capacity"))
     for price in sensitivity.export_prices:
         label = f"{price:.3f}".rstrip("0").rstrip(".")
-        assert f"| {label} EUR/kWh " in header, f"{label} is not a column of the table"
+        # Emphasis is allowed on the configured price's cell and is asserted
+        # separately; what matters here is that the price is a column at all.
+        assert f"{label} EUR/kWh" in header, f"{label} is not a column of the table"
         for singular in (
             f"At an export price of {label}",
             f"at an export price of {label}",
@@ -397,6 +399,64 @@ def test_sensitivity_prose_only_claims_the_configured_price_is_a_column_when_it_
         f"prose names {label} EUR/kWh without saying it is absent from the sweep, "
         f"pointing the reader at a column that does not exist: {context!r}"
     )
+
+
+def _emphasised_header_prices(markdown: str) -> list[str]:
+    """The price labels the sensitivity header emphasises, in column order.
+
+    Reads the rendered table the way a reader does — cell by cell, asking which
+    ones stand out — rather than matching a markup string. The report is free to
+    change how it emphasises; what it may not do is emphasise a different number
+    of columns, or the wrong one.
+    """
+    body = markdown.split("How much this depends on your export price")[1]
+    section = body.split("## ")[0]
+    header = next(ln for ln in section.splitlines() if ln.startswith("| Capacity"))
+    cells = [c.strip() for c in header.strip().strip("|").split("|")][1:]
+    return [c.strip("*").removesuffix(" EUR/kWh") for c in cells if c.startswith("**")]
+
+
+def test_sensitivity_header_marks_the_configured_price_column() -> None:
+    """The prose promises the configured price is one of the columns; the header keeps it.
+
+    Without this the reader is told to find their own column and then handed a
+    row of identical-looking headers to compare by eye. Exactly one column is the
+    price the analysis was costed at, so exactly one may be marked — a second
+    mark would point at a price the report was not run with.
+    """
+    result = build_result()
+    sensitivity = result.export_sensitivity
+    assert sensitivity is not None
+    configured = f"{sensitivity.baseline_export_price_eur_kwh:.3f}".rstrip("0").rstrip(".")
+
+    marked = _emphasised_header_prices(render_report(result, FLAT_TARIFF))
+
+    assert marked == [configured], (
+        f"expected the {configured} EUR/kWh column alone to be marked, got {marked}"
+    )
+
+
+def test_sensitivity_header_marks_nothing_when_the_configured_price_is_off_sweep() -> None:
+    """A sweep that brackets elsewhere has no column to mark, and must not invent one.
+
+    The prose already tells the reader the price is absent. A mark on some other
+    column here would contradict it, silently promoting a neighbouring price into
+    the one the analysis used.
+    """
+    result = run_analysis(
+        make_year(),
+        make_report(),
+        capacities=[0, 5],
+        battery_template=TEMPLATE,
+        tariff=FLAT_TARIFF,
+        battery_cost_per_kwh=600.0,
+        export_price_sweep=[0.20, 0.30],
+    )
+    sensitivity = result.export_sensitivity
+    assert sensitivity is not None
+    assert sensitivity.baseline_export_price_eur_kwh not in sensitivity.export_prices
+
+    assert _emphasised_header_prices(render_report(result, FLAT_TARIFF)) == []
 
 
 def test_seasonal_table_renders_one_row_per_bucket() -> None:
