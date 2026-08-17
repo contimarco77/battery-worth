@@ -8,8 +8,8 @@
 Standalone CLI that answers, from the user's **historical** energy data:
 **"Would a home battery have paid off for me?"** — with their real numbers, in minutes.
 Retrospective what-if engine. NOT a live simulator (that's battery_sim's territory,
-and the README must contain a "Why not battery_sim?" section explaining the
-complementarity: retrospective/instant vs forward/live).
+and the README must state the difference — retrospective/instant vs forward/live —
+without a dedicated comparison section; see "README (decided, with rationale)").
 
 Strategic goal: second open source project after solar-report, same audience
 (r/homeassistant, r/solar), consolidates the "energy data guy" positioning for
@@ -544,9 +544,21 @@ whoever writes the README will read neither.
   the model ignores degradation, price inflation, incentives and installation
   costs; verify with a professional before any purchase. "Limits & assumptions"
   is the technical half of the same statement and stays where it is.
-- **A `## Why not battery_sim?` section** — retrospective/instant against
-  forward/live. It will be the first question on r/homeassistant. Requires
-  external research on what battery_sim does today.
+- **No dedicated `## Why not battery_sim?` section.** Reversed on 17 August,
+  after the drafted section read like a commercial comparison page — a table of
+  four axes and a closing recommendation, a register the rest of the project
+  does not use. The comparison instead sits inside the "Retrospective, not
+  predictive" bullet of `## Why`, which is the axis of the difference anyway:
+  one mention, one link, no verdict. Two things must survive there, because
+  they are the load-bearing parts. That battery_sim runs **forward and live**
+  while this runs backwards over data already collected — the reason someone
+  picks one over the other. And that both model the **same physics** (usable
+  capacity, power limits, round-trip efficiency), which is what stops this
+  reading as the toy next to the serious integration. **Known cost of the
+  reversal:** the question still gets asked on r/homeassistant, and now the
+  answer is not findable by skimming headings or by searching "battery_sim
+  alternative". Accepted deliberately; do not re-add the section without
+  revisiting this.
 - **The card screenshot uses a flat tariff, not the Italian bands.** The footer
   names the tariff scheme but never the timezone, so "Italian bands" on foreign
   data suggests a frame the run may not have had.
